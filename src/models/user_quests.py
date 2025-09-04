@@ -2,13 +2,10 @@ from . import db
 from datetime import datetime
 
 class UserQuests(db.Model):
-    user_quest_id = db.Column(db.Integer,primary_key=True)
-    user_id = db.Column(db.Integer,db.ForeignKey("user.user_id"), nullable=False)
-    quest_id = db.Column(db.Integer,db.ForeignKey("quest.quest_id"), nullable=False)
-    event_id = db.Column(db.Integer,nullable=True)
-    is_active = db.Column(db.Boolean,nullable=False)
-    is_completed = db.Column(db.Boolean, nullable=False)
-    completed_data = db.Column(db.DateTime, nullable=True, default=datetime.utcnow)
+    __tablename__ = "user_quests"
+    user_quest_id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.user_id'), nullable=False)
+    events = db.relationship("Event", backref="user_quest")
 
     quest = db.relationship("Quest", backref="user_quests")
 

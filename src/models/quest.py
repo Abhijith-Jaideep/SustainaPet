@@ -1,9 +1,12 @@
-from . import db
+from . import db,quest_difficulty_enum
+from sqlalchemy import Enum
+
 
 class Quest(db.Model):
+    __tablename__ = "quest"
     quest_id = db.Column(db.Integer, primary_key =True)
     description =db.Column(db.String(500),nullable = True)
-    difficulty = db.Column(db.Enum("Easy","Medium","Hard"),nullable = False)
+    difficulty = db.Column(quest_difficulty_enum, nullable=False)
     reward = db.Column(db.SmallInteger,nullable = False)
     emissions = db.Column(db.Float, nullable = False)
 

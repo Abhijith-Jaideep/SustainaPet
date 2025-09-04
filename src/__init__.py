@@ -14,6 +14,8 @@ def create_app(config_name="development"):
          app.config.from_object(TestingConfig)
     elif config_name == "production":
         app.config.from_object(ProductionConfig)
+    else:
+        raise ValueError("Invalid config name")
 
     db.init_app(app)
 

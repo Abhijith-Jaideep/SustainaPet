@@ -5,8 +5,8 @@ from sqlalchemy import Enum
 
 class Event(db.Model):
     __tablename__ = "event"
-    event_id = db.Column(db.Integer, primary_key=True)
-    user_quest_id = db.Column(db.Integer, db.ForeignKey('user_quests.user_quest_id'), nullable=False)
+    eventid = db.Column(db.Integer, primary_key=True)
+    userquestid = db.Column(db.Integer, db.ForeignKey('user_quests.user_quest_id'), nullable=False)
     receipt_id = db.Column(db.Integer, db.ForeignKey('grocery_receipt.receipt_id'))
     trip_id = db.Column(db.Integer, db.ForeignKey('trip.trip_id'))
     type = db.Column(event_type_enum, nullable=False)

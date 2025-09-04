@@ -25,6 +25,7 @@ class QuestAllocation:
                 medium_quests.pop() if medium_quests else None,
                 hard_quests.pop() if hard_quests else None
             ]  
+        print("create_quest_collection: ", self.quest_collection)
         return self.quest_collection
 
     def display_quest(self):
@@ -32,7 +33,7 @@ class QuestAllocation:
         for q in self.quest_collection:
             if q:
                 quest_list.append({
-                    "quest_id": q.quest_id,
+                    "questid": q.questid,
                     "description": q.description,
                     "difficulty": q.difficulty,
                     "reward": q.reward,

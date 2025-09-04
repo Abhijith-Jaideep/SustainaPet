@@ -1,30 +1,30 @@
-# from fastapi import FastAPI
-# # from login import router as login_router
+from flask import Flask
+from src.models import db
+from src.controllers.quest_allocation import quest_bp
+# 如果你还有其他 Blueprint，比如 quest_completion、quest_reward
+# from src.controllers.quest_completion import quest_completion_bp
+# from src.controllers.quest_reward import quest_reward_bp
 
-# app = FastAPI()
-# # app.include_router(login_router)
+def create_app():
+    app = Flask(__name__)
 
-# from fastapi import FastAPI
-# from pydantic import BaseModel
-# import uuid
-# from login import router as login_router
-# from db import engine, test_connection
-# print("Starting FastAPI main.py...")
+    # 配置数据库
+    app.config['SQLALCHEMY_DATABASE_URI'] = (
+    "postgresql+psycopg2://pawprint_admin:ecopet5!@ecopawprint.postgres.database.azure.com:5432/postgres?sslmode=require") # 替换为你的数据库
+    app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
-# app = FastAPI(title="Login API")
+    # 初始化数据库
+    db.init_app(app)
 
-# class LoginRequest(BaseModel):
-#     user_id: uuid.UUID | None = None
+    # 注册 Blueprint
+    app.register_blueprint(quest_bp, url_prefix='/api')
+    # app.register_blueprint(quest_completion_bp, url_prefix='/api')
+    # app.register_blueprint(quest_reward_bp, url_prefix='/api')
 
-# @app.post("/login")
-# def login(request: LoginRequest):
-#     user_id = request.user_id or uuid.uuid4()
-#     return {"message": f"Logged in with UserID {user_id}"}
-# print(app.routes) 
+    return app
 
-# app.include_router(login_router)
-
-from src.models.db_utils import list_tables
-
-tables = list_tables()
-print(tables)
+if __name__ == "__main__":
+    app = create_app()
+    with app.app_context():
+        db.create_all()  # 如果表不存在就创建
+    app.run(debug=True, host='0.0.0.0', port=5000)

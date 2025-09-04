@@ -1,7 +1,6 @@
 // lib/widgets/eco_pet.dart
 import 'package:flutter/material.dart';
-
-enum PetMood { neutral, happy, sad }
+import '../api/pawprint_api.dart' show PetMood; // import the enum
 
 class EcoPet extends StatelessWidget {
   final PetMood mood;

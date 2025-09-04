@@ -1,13 +1,16 @@
+// lib/main.dart
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
 import 'theme/app_theme.dart';
 
 import 'screens/home_screen.dart';
 import 'screens/dashboard_screen.dart';
 import 'screens/quest_screen.dart';
-import 'screens/login_screen.dart'; // <-- add the login page
+import 'screens/login_screen.dart';
 
-void main() {
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
   runApp(const CarbonPawprintApp());
 }
 
@@ -29,12 +32,28 @@ class _CarbonPawprintAppState extends State<CarbonPawprintApp> {
 
   Future<void> _checkLoginStatus() async {
     final prefs = await SharedPreferences.getInstance();
-    final userId = prefs.getString("userId");
 
+    // Support both legacy string and current int storage.
+    final raw = prefs.get('userId'); // int | String | null
+    int? uid;
+    if (raw is int) {
+      uid = raw;
+    } else if (raw is String) {
+      final parsed = int.tryParse(raw);
+      if (parsed != null) {
+        uid = parsed;
+        await prefs.setInt('userId', parsed); // migrate to int
+      } else {
+        await prefs.remove('userId'); // corrupt -> clear
+      }
+    }
+
+    if (!mounted) return;
     setState(() {
-      _startPage = (userId == null)
+      _startPage = (uid == null)
           ? LoginScreen(
         onLoginSuccess: () {
+          // We *flip to Home* once login writes a valid int userId.
           setState(() => _startPage = const HomeScreen());
         },
       )
@@ -51,11 +70,20 @@ class _CarbonPawprintAppState extends State<CarbonPawprintApp> {
       routes: {
         '/dashboard': (_) => const DashboardScreen(),
         '/quests': (_) => const QuestScreen(),
+        // If you ever navigate to login manually:
+        '/login': (context) => LoginScreen(
+          onLoginSuccess: () {
+            // ✅ Option 1: use the route builder's context here
+            Navigator.of(context).pushReplacement(
+              MaterialPageRoute(builder: (_) => const HomeScreen()),
+            );
+          },
+        ),
       },
-      // Show loading spinner until _checkLoginStatus finishes
-      home: _startPage ?? const Scaffold(
-        body: Center(child: CircularProgressIndicator()),
-      ),
+      home: _startPage ??
+          const Scaffold(
+            body: Center(child: CircularProgressIndicator()),
+          ),
     );
   }
 }

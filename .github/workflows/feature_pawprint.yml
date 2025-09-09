@@ -58,9 +58,9 @@ jobs:
       - name: Login to Azure
         uses: azure/login@v2
         with:
-          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_0F671903AFF8414AA7865B91709FF23C }}
-          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_D2C4A5B283AE4B6FA5E18C3113EF5C06 }}
-          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_472D24699DE3494FBEFDF47E4ADBE19F }}
+          client-id: ${{ secrets.__clientidsecretname__ }}
+          tenant-id: ${{ secrets.__tenantidsecretname__ }}
+          subscription-id: ${{ secrets.__subscriptionidsecretname__ }}
 
       - name: 'Deploy to Azure Web App'
         uses: azure/webapps-deploy@v3
@@ -68,4 +68,4 @@ jobs:
         with:
           app-name: 'Pawprint'
           slot-name: 'Production'
-          
+          startup-command: 'gunicorn --bind=0.0.0.0:$PORT backend.app:app'

@@ -989,7 +989,7 @@ class EventDto {
 }
 
 class DashboardScreen extends StatefulWidget {
-  const DashboardScreen({Key? key}) : super(key: key);
+  const DashboardScreen({super.key});
 
   @override
   _DashboardScreenState createState() => _DashboardScreenState();
@@ -1112,7 +1112,7 @@ class _Metric {
 
 class _MetricWidget extends StatelessWidget {
   final _Metric metric;
-  const _MetricWidget({Key? key, required this.metric}) : super(key: key);
+  const _MetricWidget({required this.metric});
 
   @override
   Widget build(BuildContext context) {
@@ -1134,7 +1134,7 @@ class _MetricWidget extends StatelessWidget {
 
 class MonthlyEmissionsChart extends StatelessWidget {
   final List<double> values;
-  const MonthlyEmissionsChart({Key? key, required this.values}) : super(key: key);
+  const MonthlyEmissionsChart({super.key, required this.values});
 
   @override
   Widget build(BuildContext context) {

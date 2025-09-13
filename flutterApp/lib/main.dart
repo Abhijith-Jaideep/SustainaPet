@@ -90,44 +90,53 @@
 // }
 
 // lib/main.dart
+// lib/main.dart
 import 'package:flutter/material.dart';
-
-import 'theme/app_theme.dart';
-import 'screens/dashboard_screen.dart';
-import 'screens/quest_screen.dart';
-import 'screens/login_screen.dart';
-import 'screens/home_screen.dart';
+import 'screens/dashboard_screen.dart'; // 确保 dashboard_screen.dart 在 lib/screens/
 
 void main() {
-  runApp(MaterialApp(
-    home: DashboardScreen(),
-    routes: {
-      '/dashboard': (context) => DashboardScreen(),
-    },
-  ));
+  runApp(const MyApp());
 }
 
-class CarbonPawprintApp extends StatelessWidget {
-  const CarbonPawprintApp({super.key});
+class MyApp extends StatelessWidget {
+  const MyApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Carbon Pawprint',
-      theme: AppTheme.light,
       debugShowCheckedModeBanner: false,
-      routes: {
-        '/dashboard': (_) => const DashboardScreen(),
-        '/quests': (_) => const QuestScreen(),
-        '/login': (_) => LoginScreen(
-          onLoginSuccess: () {
-            Navigator.of(context).pushReplacement(
-              MaterialPageRoute(builder: (_) => const HomeScreen()),
-            );
-          },
-        ),
-      },
-      home: const DashboardScreen(),
+      title: 'Dashboard Test',
+      theme: ThemeData(
+        primarySwatch: Colors.green,
+      ),
+      home: const DashboardScreen(), // 只显示 DashboardScreen
     );
   }
 }
+
+
+
+// class CarbonPawprintApp extends StatelessWidget {
+//   const CarbonPawprintApp({super.key});
+//
+//   @override
+//   Widget build(BuildContext context) {
+//     return MaterialApp(
+//       title: 'Carbon Pawprint',
+//       theme: AppTheme.light,
+//       debugShowCheckedModeBanner: false,
+//       routes: {
+//         '/dashboard': (_) => const DashboardScreen(),
+//         '/quests': (_) => const QuestScreen(),
+//         '/login': (_) => LoginScreen(
+//           onLoginSuccess: () {
+//             Navigator.of(context).pushReplacement(
+//               MaterialPageRoute(builder: (_) => const HomeScreen()),
+//             );
+//           },
+//         ),
+//       },
+//       home: const DashboardScreen(),
+//     );
+//   }
+// }

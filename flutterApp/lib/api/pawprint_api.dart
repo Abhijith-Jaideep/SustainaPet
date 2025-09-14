@@ -22,7 +22,8 @@ class UserDto {
     userid: j['user']?['userid'] ?? j['userid'] as int,
     name: j['user']?['name'] ?? j['name'] as String,
     ecopetmood: j['user']?['ecopetmood'] ?? j['ecopetmood'] as int,
-    carbonpoints: j['user']?['carbonpoints'] ?? j['carbonpoints'] as int,
+    carbonpoints:
+    j['user']?['carbonpoints'] ?? j['carbonpoints'] as int,
   );
 }
 
@@ -43,7 +44,8 @@ class DashboardDto {
     user: UserDto.fromJson(j),
     active: j['active_quests'] as int,
     completed: j['completed_quests'] as int,
-    totalEmissionsSaved: (j['total_emissions_saved'] as num).toDouble(),
+    totalEmissionsSaved:
+    (j['total_emissions_saved'] as num).toDouble(),
   );
 }
 
@@ -107,12 +109,13 @@ class ConversionDto {
     required this.emissionsPerX,
   });
 
-  factory ConversionDto.fromJson(Map<String, dynamic> j) => ConversionDto(
-    metricid: (j['metricid'] as num).toInt(),
-    name: j['name'] as String,
-    description: j['description'] as String?,
-    emissionsPerX: (j['emissionsperx'] as num).toDouble(),
-  );
+  factory ConversionDto.fromJson(Map<String, dynamic> j) =>
+      ConversionDto(
+        metricid: (j['metricid'] as num).toInt(),
+        name: j['name'] as String,
+        description: j['description'] as String?,
+        emissionsPerX: (j['emissionsperx'] as num).toDouble(),
+      );
 }
 
 /* ===================== Events ===================== */
@@ -139,8 +142,9 @@ class EventDto {
   factory EventDto.fromJson(Map<String, dynamic> j) => EventDto(
     eventid: (j['eventid'] as num).toInt(),
     userid: (j['userid'] as num).toInt(),
-    userquestid:
-    j['userquestid'] == null ? null : (j['userquestid'] as num).toInt(),
+    userquestid: j['userquestid'] == null
+        ? null
+        : (j['userquestid'] as num).toInt(),
     description: j['description'] as String,
     type: j['type'] as String,
     emissions: (j['emissions'] as num).toDouble(),
@@ -193,17 +197,18 @@ class UserQuestDto {
     required this.quest,
   });
 
-  factory UserQuestDto.fromJson(Map<String, dynamic> j) => UserQuestDto(
-    userquestid: (j['userquestid'] as num).toInt(),
-    userid: (j['userid'] as num).toInt(),
-    questid: (j['questid'] as num).toInt(),
-    isactive: j['isactive'] as bool,
-    iscompleted: j['iscompleted'] as bool,
-    completeddate: j['completeddate'] == null
-        ? null
-        : DateTime.parse(j['completeddate'] as String),
-    quest: QuestDto.fromJson(j['quest'] as Map<String, dynamic>),
-  );
+  factory UserQuestDto.fromJson(Map<String, dynamic> j) =>
+      UserQuestDto(
+        userquestid: (j['userquestid'] as num).toInt(),
+        userid: (j['userid'] as num).toInt(),
+        questid: (j['questid'] as num).toInt(),
+        isactive: j['isactive'] as bool,
+        iscompleted: j['iscompleted'] as bool,
+        completeddate: j['completeddate'] == null
+            ? null
+            : DateTime.parse(j['completeddate'] as String),
+        quest: QuestDto.fromJson(j['quest'] as Map<String, dynamic>),
+      );
 }
 
 /* ===================== API ===================== */
@@ -318,7 +323,6 @@ class PawprintApi {
 
   /* =============== Quests =============== */
 
-  /// GET /api/users/<userid>/userquests?status=active|completed|all
   Future<List<UserQuestDto>> getUserQuests(
       int userid, {
         String status = 'active',
@@ -336,10 +340,6 @@ class PawprintApi {
         .toList();
   }
 
-  /// POST /api/users/<userid>/quests/assign_random
-  /// body: {"count": 3, "difficulty": ["Easy","Medium"]}
-  // In lib/api/pawprint_api.dart
-
   Future<List<UserQuestDto>> assignRandomQuests({
     required int userid,
     int count = 3,
@@ -355,12 +355,12 @@ class PawprintApi {
         .post(uri, headers: _headers, body: jsonEncode(body))
         .timeout(_timeout);
 
-    // Empty body or 204 -> nothing to parse
     if (resp.statusCode == 204 || resp.body.trim().isEmpty) {
       return const <UserQuestDto>[];
     }
     if (resp.statusCode != 200 && resp.statusCode != 201) {
-      throw HttpException('Assign random error: ${resp.statusCode} ${resp.body}');
+      throw HttpException(
+          'Assign random error: ${resp.statusCode} ${resp.body}');
     }
 
     dynamic decoded;
@@ -374,12 +374,10 @@ class PawprintApi {
       final out = <UserQuestDto>[];
       for (final item in list) {
         if (item is Map<String, dynamic>) {
-          // Only parse rows that include an embedded quest payload
           final q = item['quest'];
           if (q is Map<String, dynamic>) {
             out.add(UserQuestDto.fromJson(item));
           }
-          // If there’s no 'quest', skip it to avoid the crash.
         }
       }
       return out;
@@ -397,16 +395,13 @@ class PawprintApi {
     return const <UserQuestDto>[];
   }
 
-
-
-  /// POST /api/userquests/<userquestid>/complete
-  /// Returns server response (contains userquest, event, user)
   Future<Map<String, dynamic>> completeUserQuest(
       int userquestid, {
         DateTime? when,
         int moodDelta = 5,
       }) async {
-    final uri = Uri.parse('$baseUrl/api/userquests/$userquestid/complete');
+    final uri =
+    Uri.parse('$baseUrl/api/userquests/$userquestid/complete');
     final body = <String, dynamic>{
       if (when != null) 'completeddate': when.toIso8601String(),
       'mood_delta': moodDelta,
@@ -420,13 +415,29 @@ class PawprintApi {
     }
     return jsonDecode(resp.body) as Map<String, dynamic>;
   }
+
+  /* =============== Mood Reset =============== */
+
+  Future<void> resetUserMood(int userid, int mood) async {
+    final uri = Uri.parse('$baseUrl/api/users/$userid');
+    final resp = await http.patch(
+      uri,
+      headers: _headers,
+      body: jsonEncode({'ecopetmood': mood}),
+    ).timeout(_timeout);
+
+    if (resp.statusCode != 200) {
+      throw HttpException(
+          'Reset mood failed: ${resp.statusCode} ${resp.body}');
+    }
+  }
 }
 
 /* ---- Mood enum + mapper ---- */
 enum PetMood { neutral, happy, sad }
 
 PetMood petMoodFromScore(int score) {
-  if (score >= 60) return PetMood.happy;
+  if (score > 60) return PetMood.happy;
   if (score <= 30) return PetMood.sad;
   return PetMood.neutral;
 }

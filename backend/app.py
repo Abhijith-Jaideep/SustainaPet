@@ -324,7 +324,7 @@ def complete_userquest(userquestid):
     """
     data = request.get_json(silent=True) or {}
     when = data.get("completeddate")
-    mood_delta = int(data.get("mood_delta", 5))
+    mood_delta = int(data.get("mood_delta", 10))
 
     session = SessionLocal()
     try:

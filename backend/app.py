@@ -5,9 +5,12 @@ from datetime import datetime
 from sqlalchemy import select, func, cast, Integer
 import os
 
+from backend.emissions_models.ItemToDataset import map_receipt_with_emissions
+
 from .db import SessionLocal
 from .models import User, Quest, UserQuest, Event, EmissionConversionSaving
 from flask_sqlalchemy import SQLAlchemy
+from backend.emissions_models.item_info import map_receipt 
 
 db = SQLAlchemy()
 
@@ -567,6 +570,30 @@ def user_monthly_emissions(userid):
 def user_photo_info():
     pass
 
+# ---------- item_matched ----------
+items_index = {
+    "index": {
+        "apple": {"Name": "Apple", "Emissions": 0.9},
+        "beef steak": {"Name": "Beef Steak", "Emissions": 54.0}
+    },
+    "names": ["apple", "beef steak"],
+    "vectorizer": None,
+    "tfidf_matrix": None,
+    "rows": [{"Name": "Apple", "Emissions": 0.9}, {"Name": "Beef Steak", "Emissions": 54.0}]
+}
+
+cat_index = {}  
+
+@app.route("/map-receipt", methods=["POST"])
+def map_receipt_route():
+    receipt_json = request.get_json()
+    print("Received JSON:", receipt_json)
+    
+    # call map_receipt_with_emissions，input mock index
+    df_filtered = map_receipt_with_emissions(receipt_json, items_index, cat_index, None, None)
+    
+    return jsonify(df_filtered.to_dict(orient="records"))
+
 
 # Mount the blueprint
 app.register_blueprint(api)
@@ -574,3 +601,4 @@ app.register_blueprint(api)
 if __name__ == "__main__":
     # Run with: python -m backend.app
     app.run(host="0.0.0.0", port=5000, debug=True)
+    CORS(app)

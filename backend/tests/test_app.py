@@ -3,7 +3,7 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from backend.app import app
-from backend.models import User, Quest, UserQuest
+from backend.emissions_models import User, Quest, UserQuest
 from backend.db import SessionLocal   
 from datetime import datetime
 from backend.app import _month_bounds

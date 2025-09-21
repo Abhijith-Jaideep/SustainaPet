@@ -5,6 +5,7 @@ from datetime import datetime
 from sqlalchemy import select, func, cast, Integer,create_engine
 import os
 import pandas as pd
+from backend.emissions_models.ItemToDataset import map_receipt_with_emissions, items_index, cat_index, df_emissions, df_category_emissions
 
 
 from backend.emissions_models.ItemToDataset import build_category_index, build_index_from_emissions, map_receipt_with_emissions
@@ -586,8 +587,8 @@ df_category_emissions = pd.read_sql(
 )
 
 # ---------- build the index ----------
-items_index = build_index_from_emissions(df_emissions, name_col="Name")
-cat_index = build_category_index(list(df_category_emissions["Category"]))
+# items_index = build_index_from_emissions(df_emissions, name_col="Name")
+# cat_index = build_category_index(list(df_category_emissions["Category"]))
 print(type(df_emissions), type(df_category_emissions))
 
 @app.route("/map-receipt", methods=["POST"])

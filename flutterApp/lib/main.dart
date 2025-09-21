@@ -6,6 +6,7 @@ import 'screens/home_screen.dart';
 import 'screens/dashboard_screen.dart';
 import 'screens/quest_screen.dart';
 import 'screens/login_screen.dart';
+import 'screens/grocery_scanner.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -17,25 +18,44 @@ class CarbonPawprintApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    const lightGreen = Color(0xFFF6FFF6); // very light green background
-    const darkGreen = Color(0xFF2E7D32);  // darker green for bars
+    // Yellow & cream palette
+    const cream = Color(0xFFFFF7DA);    
+    const yellow = Color(0xFFFFC107);    
+    const yellowTint = Color(0xFFFFE082);
 
     return MaterialApp(
       title: 'Carbon Pawprint',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        primarySwatch: Colors.green,
-        scaffoldBackgroundColor: lightGreen,
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: yellow,
+          brightness: Brightness.light,
+        ),
+        scaffoldBackgroundColor: cream,
+
         appBarTheme: const AppBarTheme(
-          backgroundColor: darkGreen,
-          foregroundColor: Colors.white,
+          backgroundColor: yellow,
+          foregroundColor: Colors.black87,
           elevation: 0,
         ),
+
         bottomNavigationBarTheme: const BottomNavigationBarThemeData(
-          backgroundColor: darkGreen,
-          selectedItemColor: Colors.white,
-          unselectedItemColor: Colors.white70,
+          backgroundColor: yellow,
+          selectedItemColor: Colors.black87,
+          unselectedItemColor: Colors.black54,
         ),
+
+        // 👇 Your Flutter expects TabBarThemeData
+        tabBarTheme: const TabBarThemeData(
+          labelColor: Colors.black87,
+          unselectedLabelColor: Colors.black54,
+          indicator: UnderlineTabIndicator(
+            borderSide: BorderSide(color: Colors.black87, width: 2),
+          ),
+        ),
+
+        cardColor: Colors.white,
+        dividerColor: yellowTint,
       ),
       home: const RootPage(),
     );
@@ -99,6 +119,7 @@ class _MainNavigationState extends State<MainNavigation> {
     HomeScreen(),
     DashboardScreen(),
     QuestScreen(),
+    GroceryScannerScreen()
   ];
 
   void _onItemTapped(int index) {
@@ -116,6 +137,7 @@ class _MainNavigationState extends State<MainNavigation> {
           BottomNavigationBarItem(icon: Icon(Icons.home), label: "Home"),
           BottomNavigationBarItem(icon: Icon(Icons.dashboard), label: "Dashboard"),
           BottomNavigationBarItem(icon: Icon(Icons.task), label: "Quests"),
+          BottomNavigationBarItem(icon: Icon(Icons.receipt_long), label: "Grocery Receipt")
         ],
       ),
     );

@@ -416,6 +416,43 @@ class PawprintApi {
     return jsonDecode(resp.body) as Map<String, dynamic>;
   }
 
+  Future<UserQuestDto?> getUserQuest(int userQuestId) async {
+    final uri = Uri.parse('$baseUrl/api/userquests/$userQuestId');
+    final resp = await http.get(uri, headers: _headers).timeout(_timeout);
+
+    if (resp.statusCode == 404) return null;
+    if (resp.statusCode != 200) {
+      throw HttpException('Get userquest error: ${resp.statusCode} ${resp.body}');
+    }
+
+    final map = jsonDecode(resp.body) as Map<String, dynamic>;
+    return UserQuestDto.fromJson(map);
+  }
+
+  Future<UserQuestDto?> replaceUserQuest(
+      int userQuestId, {
+        List<String>? difficulty,
+      }) async {
+    final uri = Uri.parse('$baseUrl/api/userquests/$userQuestId/replace_random');
+    final body = (difficulty != null && difficulty.isNotEmpty)
+        ? {'difficulty': difficulty}
+        : {};
+
+    final resp = await http
+        .post(uri, headers: _headers, body: jsonEncode(body))
+        .timeout(_timeout);
+
+    if (resp.statusCode == 404) return null;
+    if (resp.statusCode != 200) {
+      throw HttpException('Replace userquest error: ${resp.statusCode} ${resp.body}');
+    }
+
+    final map = jsonDecode(resp.body) as Map<String, dynamic>;
+    return UserQuestDto.fromJson(map);
+  }
+
+
+
   /* =============== Mood Reset =============== */
 
   Future<void> resetUserMood(int userid, int mood) async {

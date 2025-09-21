@@ -2,10 +2,12 @@
 from flask import Flask, Blueprint, jsonify, request, abort
 from flask_cors import CORS
 from datetime import datetime
-from sqlalchemy import select, func, cast, Integer
+from sqlalchemy import select, func, cast, Integer,create_engine
 import os
+import pandas as pd
 
-from backend.emissions_models.ItemToDataset import map_receipt_with_emissions
+
+from backend.emissions_models.ItemToDataset import build_category_index, build_index_from_emissions, map_receipt_with_emissions
 
 from .db import SessionLocal
 from .models import User, Quest, UserQuest, Event, EmissionConversionSaving
@@ -570,27 +572,37 @@ def user_monthly_emissions(userid):
 def user_photo_info():
     pass
 
-# ---------- item_matched ----------
-items_index = {
-    "index": {
-        "apple": {"Name": "Apple", "Emissions": 0.9},
-        "beef steak": {"Name": "Beef Steak", "Emissions": 54.0}
-    },
-    "names": ["apple", "beef steak"],
-    "vectorizer": None,
-    "tfidf_matrix": None,
-    "rows": [{"Name": "Apple", "Emissions": 0.9}, {"Name": "Beef Steak", "Emissions": 54.0}]
-}
 
-cat_index = {}  
+# ---------- connected to the database ----------
+engine = create_engine(
+    "postgresql+psycopg2://pawprint_admin:ecopet5!@ecopawprint.postgres.database.azure.com:5432/postgres"
+)
+
+# ---------- read the csv from database----------
+df_emissions = pd.read_sql('SELECT * FROM pawprint."FoodEmissions";', engine)
+df_category_emissions = pd.read_sql(
+    'SELECT "Category", "Emissions" FROM pawprint."CategoryEmissions";',
+    engine
+)
+
+# ---------- build the index ----------
+items_index = build_index_from_emissions(df_emissions, name_col="Name")
+cat_index = build_category_index(list(df_category_emissions["Category"]))
+print(type(df_emissions), type(df_category_emissions))
 
 @app.route("/map-receipt", methods=["POST"])
 def map_receipt_route():
     receipt_json = request.get_json()
     print("Received JSON:", receipt_json)
     
-    # call map_receipt_with_emissions，input mock index
-    df_filtered = map_receipt_with_emissions(receipt_json, items_index, cat_index, None, None)
+    # call map_receipt_with_emissions
+    df_filtered = map_receipt_with_emissions(
+    receipt_json, 
+    items_index, 
+    cat_index, 
+    df_emissions, 
+    df_category_emissions
+)
     
     return jsonify(df_filtered.to_dict(orient="records"))
 

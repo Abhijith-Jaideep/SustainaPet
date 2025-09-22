@@ -17,6 +17,9 @@ from .models import User, Quest, UserQuest, Event, EmissionConversionSaving
 from flask_sqlalchemy import SQLAlchemy
 from backend.emissions_models.item_info import map_receipt 
 from backend.receipt_update.receipt_parser import extract_items_from_bytes
+import base64, re
+from io import BytesIO
+from PIL import Image
 
 db = SQLAlchemy()
 
@@ -589,11 +592,6 @@ df_category_emissions = pd.read_sql(
     engine
 )
 
-# ---------- build the index ----------
-# items_index = build_index_from_emissions(df_emissions, name_col="Name")
-# cat_index = build_category_index(list(df_category_emissions["Category"]))
-print(type(df_emissions), type(df_category_emissions))
-
 @app.route("/map-receipt", methods=["POST"])
 def map_receipt_route():
     receipt_json = request.get_json()    
@@ -609,30 +607,40 @@ def map_receipt_route():
     
     return jsonify(df_filtered.to_dict(orient="records"))
 
-# PARSER_API_URL = "https://api.lavanya.com/parse_receipt"
 
 receipt_json = None
-GOOGLE_KEY_PATH = "E:\monash\FIT5120\carbon_pawprint\backend\receipt_update\savvy-girder-472600-s1-07e7b3e23118.json " 
+GOOGLE_KEY_PATH = r"backend\receipt_update\savvy-girder-472600-s1-07e7b3e23118.json"
 
-@app.route("/receipt_parser", methods=["POST"])
+def _normalize_b64(s: str) -> bytes:
+    # Strip data URL prefix if present
+    s = re.sub(r'^data:image/[^;]+;base64,', '', s, flags=re.I)
+    # Fix URL-safe variants
+    s = s.replace('-', '+').replace('_', '/')
+    # Fix padding
+    pad = (-len(s)) % 4
+    if pad:
+        s += '=' * pad
+    return base64.b64decode(s, validate=False)
+
+@app.route("/receipt-parser", methods=["POST"])
 def update_receipt():
     data = request.get_json()
     if not data or "image_base64" not in data:
         return jsonify({"error": "No image_base64 field"}), 400
 
     try:
-        # decode base64 → bytes
-        img_bytes = base64.b64decode(data["image_base64"])
+        img_bytes = _normalize_b64(data["image_base64"])
 
-        # ✅ call the imported function, not `receipt_parser`
+        # Sanity check: does PIL accept it as an image?
+        with Image.open(BytesIO(img_bytes)) as im:
+            im.verify()  # raises if not a valid image
+
         items_parsed = extract_items_from_bytes(img_bytes, key_path=GOOGLE_KEY_PATH)
+        return jsonify({"receipt_json": items_parsed})
 
     except Exception as e:
+        import traceback; traceback.print_exc()
         return jsonify({"error": f"Parsing failed: {str(e)}"}), 500
-
-    return jsonify({
-        "receipt_json": items_parsed
-    })
 
 # Mount the blueprint
 app.register_blueprint(api)

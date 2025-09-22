@@ -272,10 +272,6 @@ cat_index = build_category_index(list(df_category_emissions["Category"]))
 # Run on receipt JSON
 mapped_df = map_receipt_with_emissions(receipt_json1, items_index, cat_index, df_emissions, df_category_emissions)
 
-# display(mapped_df)
-print(mapped_df)
-
-
 # In[7]:
 
 

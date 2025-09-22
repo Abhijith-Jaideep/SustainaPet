@@ -221,81 +221,73 @@ class _GroceryScannerScreenState extends State<GroceryScannerScreen> {
 
     return Scaffold(
       appBar: AppBar(title: const Text('Grocery Receipt Scanner')),
-      body: Center(
+      body: SafeArea(
         child: SingleChildScrollView(
-          padding: const EdgeInsets.all(24),
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 16), // tighter padding, anchored to top
           child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            crossAxisAlignment: CrossAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
+              // Smaller header art
               SizedBox(
-                height: 200,
+                height: 140, // was 200
                 child: Image.asset(
                   'assets/scan.gif',
                   fit: BoxFit.contain,
                   errorBuilder: (_, __, ___) =>
-                  const Icon(Icons.document_scanner, size: 80),
+                  const Icon(Icons.document_scanner, size: 64), // was 80
                 ),
               ),
-              const SizedBox(height: 24),
+              const SizedBox(height: 8), // was 24
               const Text(
                 "Upload a receipt or take a photo to scan",
                 textAlign: TextAlign.center,
                 style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
               ),
-              const SizedBox(height: 32),
+              const SizedBox(height: 12), // was 32
 
               // Buttons
-              Row(
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  Expanded(
-                    child: SizedBox(
-                      height: 50,
-                      child: ElevatedButton.icon(
-                        onPressed: _loading ? null : _pickFromFiles,
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFFFFC107),
-                          foregroundColor: Colors.black87,
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
-                          ),
+                  SizedBox(
+                    height: 48, // was 50
+                    child: ElevatedButton.icon(
+                      onPressed: _loading ? null : _pickFromFiles,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFFFFC107),
+                        foregroundColor: Colors.black87,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
                         ),
-                        icon: _loading
-                            ? const SizedBox(
-                          width: 18,
-                          height: 18,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                            : const Icon(Icons.upload_file),
-                        label: Text(
-                          _loading ? 'Processing…' : 'Choose from Files',
-                          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
-                        ),
+                      ),
+                      icon: _loading
+                          ? const SizedBox(
+                          width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                          : const Icon(Icons.upload_file),
+                      label: Text(
+                        _loading ? 'Processing…' : 'Choose from Files',
+                        style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
                       ),
                     ),
                   ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: SizedBox(
-                      height: 50,
-                      child: OutlinedButton.icon(
-                        onPressed: _loading ? null : _takePhoto,
-                        style: OutlinedButton.styleFrom(
-                          foregroundColor: Colors.black87,
-                          side: const BorderSide(color: Color(0xFFFFC107)),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                        ),
-                        icon: const Icon(Icons.photo_camera_outlined),
-                        label: const Text('Take Photo'),
+                  const SizedBox(height: 10), // was 12
+                  SizedBox(
+                    height: 48, // was 50
+                    child: OutlinedButton.icon(
+                      onPressed: _loading ? null : _takePhoto,
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: Colors.black87,
+                        side: const BorderSide(color: Color(0xFFFFC107)),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                       ),
+                      icon: const Icon(Icons.photo_camera_outlined),
+                      label: const Text('Take Photo'),
                     ),
                   ),
                 ],
               ),
 
-              const SizedBox(height: 20),
+              const SizedBox(height: 12), // was 20
 
               if (_pickedFile != null)
                 Text(
@@ -308,7 +300,7 @@ class _GroceryScannerScreenState extends State<GroceryScannerScreen> {
                 ),
 
               if (_error != null) ...[
-                const SizedBox(height: 16),
+                const SizedBox(height: 12), // was 16
                 Text(
                   _error!,
                   style: theme.textTheme.bodyMedium
@@ -319,7 +311,7 @@ class _GroceryScannerScreenState extends State<GroceryScannerScreen> {
 
               // ===== SUMMARY CARD (tap to expand and see items) =====
               if (_rows.isNotEmpty) ...[
-                const SizedBox(height: 24),
+                const SizedBox(height: 16), // was 24
                 _ReceiptSummaryCard(
                   totalKg: _totalKg,
                   itemCount: _rows.length,
@@ -327,7 +319,7 @@ class _GroceryScannerScreenState extends State<GroceryScannerScreen> {
                     shrinkWrap: true,
                     physics: const NeverScrollableScrollPhysics(),
                     itemCount: _rows.length,
-                    separatorBuilder: (_, __) => const SizedBox(height: 12),
+                    separatorBuilder: (_, __) => const SizedBox(height: 10), // was 12
                     itemBuilder: (_, i) => _receiptCard(_rows[i], theme),
                   ),
                 ),
@@ -493,18 +485,19 @@ class _ReceiptSummaryCardState extends State<_ReceiptSummaryCard> {
           InkWell(
             onTap: () => setState(() => _expanded = !_expanded),
             child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12), // was 14
               child: Row(
                 children: [
                   Container(
-                    width: 40, height: 40,
+                    width: 32, // was 40
+                    height: 32, // was 40
                     decoration: const BoxDecoration(
                       color: Color(0xFFFFF3C4),
                       shape: BoxShape.circle,
                     ),
-                    child: const Icon(Icons.receipt_long, color: Color(0xFFFFC107)),
+                    child: const Icon(Icons.receipt_long, size: 18, color: Color(0xFFFFC107)), // reduced glyph
                   ),
-                  const SizedBox(width: 12),
+                  const SizedBox(width: 10), // was 12
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -524,7 +517,7 @@ class _ReceiptSummaryCardState extends State<_ReceiptSummaryCard> {
                   AnimatedRotation(
                     duration: const Duration(milliseconds: 180),
                     turns: _expanded ? 0.5 : 0.0,
-                    child: const Icon(Icons.expand_more, size: 26),
+                    child: const Icon(Icons.expand_more, size: 22), // was 26
                   ),
                 ],
               ),

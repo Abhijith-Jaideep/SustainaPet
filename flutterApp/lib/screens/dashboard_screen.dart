@@ -246,30 +246,69 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                 label: 'Carbon Emitted',
                               ),
                               const SizedBox(height: 8),
-                              Row(
-                                crossAxisAlignment: CrossAxisAlignment.end,
-                                children: [
-                                  Text(
-                                    data.emittedKg.toStringAsFixed(1),
-                                    style: const TextStyle(
-                                      fontSize: 28,
-                                      fontWeight: FontWeight.w700,
-                                      color: Color(0xFFD64545), // red
-                                    ),
+                              SizedBox(
+                                width: double.infinity,
+                                child: FittedBox(
+                                  alignment: Alignment.bottomLeft,
+                                  fit: BoxFit.scaleDown,
+                                  child: Row(
+                                    crossAxisAlignment: CrossAxisAlignment.end,
+                                    children: const [
+                                      // value
+                                    ],
                                   ),
-                                  const SizedBox(width: 4),
-                                  const Padding(
-                                    padding: EdgeInsets.only(bottom: 4),
-                                    child: Text(
-                                      'kg',
-                                      style: TextStyle(
-                                        fontSize: 14,
-                                        color: Colors.black54,
-                                        fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                              SizedBox(
+                                width: double.infinity,
+                                child: FittedBox(
+                                  alignment: Alignment.bottomLeft,
+                                  fit: BoxFit.scaleDown,
+                                  child: Row(
+                                    crossAxisAlignment: CrossAxisAlignment.end,
+                                    children: [
+                                      Text(
+                                        // populated below via builder
+                                        '',
+                                        // placeholder; real value via Builder
                                       ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                              Builder(
+                                builder: (_) => SizedBox(
+                                  width: double.infinity,
+                                  child: FittedBox(
+                                    alignment: Alignment.bottomLeft,
+                                    fit: BoxFit.scaleDown,
+                                    child: Row(
+                                      crossAxisAlignment: CrossAxisAlignment.end,
+                                      children: [
+                                        Text(
+                                          data.emittedKg.toStringAsFixed(1),
+                                          style: const TextStyle(
+                                            fontSize: 34,
+                                            fontWeight: FontWeight.w800,
+                                            color: Color(0xFFD64545),
+                                          ),
+                                        ),
+                                        const SizedBox(width: 6),
+                                        const Padding(
+                                          padding: EdgeInsets.only(bottom: 4),
+                                          child: Text(
+                                            'kg',
+                                            style: TextStyle(
+                                              fontSize: 16,
+                                              color: Colors.black54,
+                                              fontWeight: FontWeight.w700,
+                                            ),
+                                          ),
+                                        ),
+                                      ],
                                     ),
                                   ),
-                                ],
+                                ),
                               ),
                             ],
                           ),
@@ -286,30 +325,37 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                 label: 'Carbon Saved',
                               ),
                               const SizedBox(height: 8),
-                              Row(
-                                crossAxisAlignment: CrossAxisAlignment.end,
-                                children: [
-                                  Text(
-                                    data.savedKg.toStringAsFixed(1), // may be negative; shown as-is
-                                    style: const TextStyle(
-                                      fontSize: 28,
-                                      fontWeight: FontWeight.w700,
-                                      color: Color(0xFF2E7D32), // green
-                                    ),
-                                  ),
-                                  const SizedBox(width: 4),
-                                  const Padding(
-                                    padding: EdgeInsets.only(bottom: 4),
-                                    child: Text(
-                                      'kg',
-                                      style: TextStyle(
-                                        fontSize: 14,
-                                        color: Colors.black54,
-                                        fontWeight: FontWeight.w600,
+                              SizedBox(
+                                width: double.infinity,
+                                child: FittedBox(
+                                  alignment: Alignment.bottomLeft,
+                                  fit: BoxFit.scaleDown,
+                                  child: Row(
+                                    crossAxisAlignment: CrossAxisAlignment.end,
+                                    children: [
+                                      Text(
+                                        data.savedKg.toStringAsFixed(1),
+                                        style: const TextStyle(
+                                          fontSize: 34,
+                                          fontWeight: FontWeight.w800,
+                                          color: Color(0xFF2E7D32),
+                                        ),
                                       ),
-                                    ),
+                                      const SizedBox(width: 6),
+                                      const Padding(
+                                        padding: EdgeInsets.only(bottom: 4),
+                                        child: Text(
+                                          'kg',
+                                          style: TextStyle(
+                                            fontSize: 16,
+                                            color: Colors.black54,
+                                            fontWeight: FontWeight.w700,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
                                   ),
-                                ],
+                                ),
                               ),
                             ],
                           ),
@@ -694,6 +740,9 @@ class _ConversionGrid extends StatelessWidget {
     final width = MediaQuery.of(context).size.width;
     final cols = width > 760 ? 3 : 2;
 
+    final tileHeight = width > 760 ? 160.0 : 190.0; // taller tiles so text never clips
+
+
     return GridView.builder(
       physics: const NeverScrollableScrollPhysics(),
       shrinkWrap: true,
@@ -702,7 +751,7 @@ class _ConversionGrid extends StatelessWidget {
         crossAxisCount: cols,
         mainAxisSpacing: 10,
         crossAxisSpacing: 10,
-        childAspectRatio: 2.0,
+        mainAxisExtent: tileHeight, // key: taller tiles
       ),
       itemBuilder: (context, i) {
         final m = metrics[i];
@@ -739,26 +788,29 @@ class _ConversionGrid extends StatelessWidget {
                     mainAxisAlignment: MainAxisAlignment.center,
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      // Title (1 line)
-                      Text(
-                        m.name,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          fontWeight: FontWeight.w700,
-                          fontSize: 13,
+                      // Title (allow up to 2 lines, wrap)
+                      Flexible(
+                        child: Text(
+                          m.name,
+                          maxLines: 2,
+                          softWrap: true,
+                          style: const TextStyle(
+                            fontWeight: FontWeight.w700,
+                            fontSize: 13,
+                          ),
                         ),
                       ),
-                      const SizedBox(height: 2),
-                      // Sentence (up to 2 lines)
-                      Text(
-                        sentence,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          fontSize: 11.5,
-                          color: Colors.black87,
-                          height: 1.15,
+                      const SizedBox(height: 4),
+                      // Sentence: wrap fully, no ellipses
+                      Flexible(
+                        child: Text(
+                          sentence,
+                          softWrap: true,
+                          style: const TextStyle(
+                            fontSize: 12,
+                            color: Colors.black87,
+                            height: 1.2,
+                          ),
                         ),
                       ),
                     ],

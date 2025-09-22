@@ -50,6 +50,9 @@ dependencies:
 dev_dependencies:
   flutter_test:
     sdk: flutter
+  flutter_launcher_icons: ^0.13.1
+  flutter_native_splash: ^2.4.2
+
 
   # The "flutter_lints" package below contains a set of recommended lints to
   # encourage good coding practices. The lint set provided by the package is
@@ -60,11 +63,20 @@ dev_dependencies:
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
+flutter_launcher_icons:
+  android: true
+  ios: true
+  image_path: assets/app_icon/icon_1024.png      # used for iOS and legacy Android
+  adaptive_icon_foreground: assets/app_icon/icon_foreground_1024.png
+  adaptive_icon_background: "#FFF7DA"            # matches your app bg
+
 
 # The following section is specific to Flutter packages.
 flutter:
   assets:
     - assets/images/eco_pet/
+    - assets/app_icon/
+    - assets/splash/
 
   # The following line ensures that the Material Icons font is
   # included with your application, so that you can use the icons in

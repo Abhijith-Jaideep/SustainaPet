@@ -7,7 +7,7 @@ import requests
 from sqlalchemy import select, func, cast, Integer,create_engine
 import os
 import pandas as pd
-from backend.emissions_models.ItemToDataset import map_receipt_with_emissions, items_index, cat_index, df_emissions, df_category_emissions
+from backend.emissions_models.ItemToDataset import map_receipt_with_emissions, items_index, cat_index
 from backend.receipt_update.receipt_parser import parse_items_only_from_lines
 
 from backend.emissions_models.ItemToDataset import build_category_index, build_index_from_emissions, map_receipt_with_emissions
@@ -26,6 +26,14 @@ db = SQLAlchemy()
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "*"}})  # relax as needed for dev
 api = Blueprint("api", __name__, url_prefix="/api")
+
+with SessionLocal() as session:
+    # Use the existing session connection for pandas
+    conn = session.connection()
+
+    df_emissions = pd.read_sql('SELECT * FROM pawprint."FoodEmissions";', conn)
+    df_category_emissions = pd.read_sql('SELECT * FROM pawprint."CategoryEmissions";', conn)
+
 
 # ---- configuration ----
 # If a quest has NO explicit emissions value, we convert points -> CO2e saved:
@@ -579,18 +587,6 @@ def user_monthly_emissions(userid):
 def user_photo_info():
     pass
 
-
-# ---------- connected to the database ----------
-engine = create_engine(
-    "postgresql+psycopg2://pawprint_admin:ecopet5!@ecopawprint.postgres.database.azure.com:5432/postgres"
-)
-
-# ---------- read the csv from database----------
-df_emissions = pd.read_sql('SELECT * FROM pawprint."FoodEmissions";', engine)
-df_category_emissions = pd.read_sql(
-    'SELECT * FROM pawprint."CategoryEmissions";',
-    engine
-)
 
 @app.route("/map-receipt", methods=["POST"])
 def map_receipt_route():

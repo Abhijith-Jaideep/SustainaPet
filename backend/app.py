@@ -1,12 +1,14 @@
 # backend/app.py
+import base64
 from flask import Flask, Blueprint, jsonify, request, abort
 from flask_cors import CORS
 from datetime import datetime
+import requests
 from sqlalchemy import select, func, cast, Integer,create_engine
 import os
 import pandas as pd
 from backend.emissions_models.ItemToDataset import map_receipt_with_emissions, items_index, cat_index, df_emissions, df_category_emissions
-
+from backend.receipt_update.receipt_parser import parse_items_only_from_lines
 
 from backend.emissions_models.ItemToDataset import build_category_index, build_index_from_emissions, map_receipt_with_emissions
 
@@ -14,6 +16,7 @@ from .db import SessionLocal
 from .models import User, Quest, UserQuest, Event, EmissionConversionSaving
 from flask_sqlalchemy import SQLAlchemy
 from backend.emissions_models.item_info import map_receipt 
+from backend.receipt_update.receipt_parser import extract_items_from_bytes
 
 db = SQLAlchemy()
 
@@ -606,6 +609,30 @@ def map_receipt_route():
     
     return jsonify(df_filtered.to_dict(orient="records"))
 
+# PARSER_API_URL = "https://api.lavanya.com/parse_receipt"
+
+receipt_json = None
+GOOGLE_KEY_PATH = "E:\monash\FIT5120\carbon_pawprint\backend\receipt_update\savvy-girder-472600-s1-07e7b3e23118.json " 
+
+@app.route("/receipt_parser", methods=["POST"])
+def update_receipt():
+    data = request.get_json()
+    if not data or "image_base64" not in data:
+        return jsonify({"error": "No image_base64 field"}), 400
+
+    try:
+        # decode base64 → bytes
+        img_bytes = base64.b64decode(data["image_base64"])
+
+        # ✅ call the imported function, not `receipt_parser`
+        items_parsed = extract_items_from_bytes(img_bytes, key_path=GOOGLE_KEY_PATH)
+
+    except Exception as e:
+        return jsonify({"error": f"Parsing failed: {str(e)}"}), 500
+
+    return jsonify({
+        "receipt_json": items_parsed
+    })
 
 # Mount the blueprint
 app.register_blueprint(api)

@@ -1,15 +1,13 @@
 # backend/app.py
-from __future__ import annotations
-
 import base64 as _b64
-import os, re, logging
+import os
+import re
 from datetime import datetime
 from io import BytesIO
-from typing import Optional, Tuple
 
 import pandas as pd
 from PIL import Image, UnidentifiedImageError
-from flask import Flask, Blueprint, jsonify, request, abort, g, redirect, url_for
+from flask import Flask, Blueprint, jsonify, request, abort
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import select, func, cast, Integer
@@ -17,120 +15,35 @@ from sqlalchemy import select, func, cast, Integer
 from .db import SessionLocal
 from .models import User, Quest, UserQuest, Event, EmissionConversionSaving, GroceryReceipt
 
-# -----------------------------------------------------------------------------
-# App + Config
-# -----------------------------------------------------------------------------
-app = Flask(__name__)
-# CORS: allow all for /api/* (tweak via env if you want)
-CORS(app, resources={r"/api/*": {"origins": os.environ.get("CORS_ORIGINS", "*")}})
-api = Blueprint("api", __name__, url_prefix="/api")
+# Eager imports from your emissions stack (kept)
+from backend.emissions_models.ItemToDataset import (
+    map_receipt_with_emissions,
+    items_index,
+    cat_index,
+    # build_index_from_emissions,  # not used here
+    # build_category_index,        # not used here
+)
+from backend.emissions_models.item_info import map_receipt  # noqa: F401
+from backend.receipt_update.receipt_parser import extract_items_from_bytes
+
 db = SQLAlchemy()
 
-# JSON responses should keep key order (nicer for clients)
-app.config["JSON_SORT_KEYS"] = False
+app = Flask(__name__)
+CORS(app, resources={r"/api/*": {"origins": "*"}})
+api = Blueprint("api", __name__, url_prefix="/api")
+app.url_map.strict_slashes = False  # small QoL: /users/1 == /users/1/
 
-# Be forgiving with trailing/multiple slashes
-app.url_map.strict_slashes = False
-
-# Logging
-logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
-log = app.logger
-
-# Tunables
+# ---- configuration ----
 POINT_KG_PER_POINT = float(os.environ.get("POINT_KG_PER_POINT", "0.05"))
 MAX_IMAGE_BYTES = int(os.environ.get("MAX_IMAGE_BYTES", str(6 * 1024 * 1024)))  # 6MB default
 
-# -----------------------------------------------------------------------------
-# Lazy globals (heavy bits guarded)
-# -----------------------------------------------------------------------------
-df_emissions: Optional[pd.DataFrame] = None
-df_category_emissions: Optional[pd.DataFrame] = None
-_items_index = None
-_cat_index = None
-_emissions_mod = None   # backend.emissions_models.ItemToDataset
-_receipt_mod = None     # backend.receipt_update.receipt_parser
-_emissions_ready = False
+# ---------- Preload emissions reference tables ----------
+with SessionLocal() as _session:
+    _conn = _session.connection()
+    df_emissions = pd.read_sql('SELECT * FROM pawprint."FoodEmissions";', _conn)
+    df_category_emissions = pd.read_sql('SELECT * FROM pawprint."CategoryEmissions";', _conn)
 
-def _lazy_imports() -> None:
-    """
-    Import heavy modules only when we actually need them.
-    NEVER raise — set module to None and log. Callers must handle 503 gracefully.
-    """
-    global _emissions_mod, _receipt_mod
-    if _emissions_mod is None:
-        try:
-            import importlib
-            _emissions_mod = importlib.import_module("backend.emissions_models.ItemToDataset")
-            log.info("Lazy-imported emissions module")
-        except Exception as e:
-            _emissions_mod = None
-            log.exception("Failed to import emissions module lazily: %s", e)
-
-    if _receipt_mod is None:
-        try:
-            import importlib
-            _receipt_mod = importlib.import_module("backend.receipt_update.receipt_parser")
-            log.info("Lazy-imported receipt parser module")
-        except Exception as e:
-            _receipt_mod = None
-            log.exception("Failed to import receipt parser module lazily: %s", e)
-
-def _ensure_emissions_loaded() -> None:
-    """
-    Load emissions tables & build indices once, on demand.
-    Return quickly if already loaded. Never raise — set flag and let caller 503.
-    """
-    global df_emissions, df_category_emissions, _items_index, _cat_index, _emissions_ready
-
-    if _emissions_ready and df_emissions is not None and df_category_emissions is not None:
-        return
-
-    _lazy_imports()
-    if _emissions_mod is None:
-        _emissions_ready = False
-        return
-
-    try:
-        with SessionLocal() as s:
-            conn = s.connection()
-            if df_emissions is None:
-                df = pd.read_sql('SELECT * FROM pawprint."FoodEmissions";', conn)
-                df_emissions = df
-                log.info("Loaded FoodEmissions rows: %s", len(df))
-            if df_category_emissions is None:
-                dfc = pd.read_sql('SELECT * FROM pawprint."CategoryEmissions";', conn)
-                df_category_emissions = dfc
-                log.info("Loaded CategoryEmissions rows: %s", len(dfc))
-
-        if _items_index is None and df_emissions is not None:
-            _items_index = _emissions_mod.build_index_from_emissions(df_emissions)
-            log.info("Built items index")
-        if _cat_index is None and df_category_emissions is not None:
-            _cat_index = _emissions_mod.build_category_index(df_category_emissions)
-            log.info("Built category index")
-
-        _emissions_ready = all([
-            df_emissions is not None,
-            df_category_emissions is not None,
-            _items_index is not None,
-            _cat_index is not None,
-        ])
-    except Exception as e:
-        _emissions_ready = False
-        log.exception("Failed to load emissions data or build indices: %s", e)
-
-# -----------------------------------------------------------------------------
-# Utilities
-# -----------------------------------------------------------------------------
-def _json(data, status=200):
-    return jsonify(data), status
-
-def _month_bounds(year: int, month: int) -> Tuple[datetime, datetime]:
-    start = datetime(year, month, 1)
-    end = datetime(year + 1, 1, 1) if month == 12 else datetime(year, month + 1, 1)
-    return start, end
-
-# Weekly counters shims (your original logic retained)
+# ---------- Weekly counters: name-compat shims ----------
 WES_ATTR = (
     "weekly_emissions_saved"
     if hasattr(User, "weekly_emissions_saved")
@@ -141,240 +54,289 @@ WEP_ATTR = (
     if hasattr(User, "weekly_emissions_produced")
     else ("weeklyemissionsproduced" if hasattr(User, "weeklyemissionsproduced") else None)
 )
-def _get_wes(u: User) -> float: return float(getattr(u, WES_ATTR, 0.0)) if WES_ATTR else 0.0
-def _get_wep(u: User) -> float: return float(getattr(u, WEP_ATTR, 0.0)) if WEP_ATTR else 0.0
-def _set_wes(u: User, v: float) -> None:
-    if WES_ATTR: setattr(u, WES_ATTR, float(v))
-def _set_wep(u: User, v: float) -> None:
-    if WEP_ATTR: setattr(u, WEP_ATTR, float(v))
-def _bump_weekly(u: User, d: float) -> None:
-    _set_wep(u, _get_wep(u) + d) if d >= 0 else _set_wes(u, _get_wes(u) + d)
 
-def as_user_dict(u: User): return {
-    "userid": u.userid, "name": u.name, "ecopetmood": u.ecopetmood, "carbonpoints": u.carbonpoints,
-    "weekly_emissions_saved": _get_wes(u), "weekly_emissions_produced": _get_wep(u),
-}
-def as_quest_dict(q: Quest): return {
-    "questid": q.questid, "description": q.description, "difficulty": q.difficulty,
-    "reward": q.reward, "emissions": q.emissions,
-}
-def as_userquest_dict(uq: UserQuest): return {
-    "userquestid": uq.userquestid, "userid": uq.userid, "questid": uq.questid,
-    "isactive": uq.isactive, "iscompleted": uq.iscompleted,
-    "completeddate": uq.completeddate.isoformat() if uq.completeddate else None,
-}
-def as_event_dict(ev: Event): return {
-    "eventid": ev.eventid, "userid": ev.userid, "userquestid": ev.userquestid,
-    "receiptid": ev.receiptid, "tripid": ev.tripid, "description": ev.description,
-    "type": ev.type, "emissions": ev.emissions,
-    "datetime": ev.datetime.isoformat() if ev.datetime else None,
-}
+def _get_wes(u: User) -> float:
+    return float(getattr(u, WES_ATTR, 0.0)) if WES_ATTR else 0.0
 
-# -----------------------------------------------------------------------------
-# Global request tweaks
-# -----------------------------------------------------------------------------
-@app.before_request
-def _collapse_double_slashes():
-    """
-    Normalize accidental // in paths (e.g., /api//users/... -> /api/users/...)
-    before Flask routing. Avoids 308s and duplicate work on cold start.
-    """
-    p = request.path
-    if "//" in p:
-        fixed = re.sub(r"/{2,}", "/", p)
-        qs = ("?" + request.query_string.decode()) if request.query_string else ""
-        return redirect(fixed + qs, code=301)
+def _get_wep(u: User) -> float:
+    return float(getattr(u, WEP_ATTR, 0.0)) if WEP_ATTR else 0.0
 
-# -----------------------------------------------------------------------------
-# Health / Root
-# -----------------------------------------------------------------------------
-@app.get("/")
-def root():
-    return jsonify({
-        "ok": True,
-        "service": "pawprint-backend",
-        "point_kg_per_point": POINT_KG_PER_POINT,
-    })
+def _set_wes(u: User, val: float) -> None:
+    if WES_ATTR:
+        setattr(u, WES_ATTR, float(val))
 
+def _set_wep(u: User, val: float) -> None:
+    if WEP_ATTR:
+        setattr(u, WEP_ATTR, float(val))
+
+def _bump_weekly(u: User, delta: float) -> None:
+    if delta >= 0:
+        _set_wep(u, _get_wep(u) + delta)
+    else:
+        _set_wes(u, _get_wes(u) + delta)
+
+# ---------- helpers ----------
+def as_user_dict(u: User):
+    return {
+        "userid": u.userid,
+        "name": u.name,
+        "ecopetmood": u.ecopetmood,
+        "carbonpoints": u.carbonpoints,
+        "weekly_emissions_saved": _get_wes(u),
+        "weekly_emissions_produced": _get_wep(u),
+    }
+
+def as_quest_dict(q: Quest):
+    return {
+        "questid": q.questid,
+        "description": q.description,
+        "difficulty": q.difficulty,
+        "reward": q.reward,
+        "emissions": q.emissions,
+    }
+
+def as_userquest_dict(uq: UserQuest):
+    return {
+        "userquestid": uq.userquestid,
+        "userid": uq.userid,
+        "questid": uq.questid,
+        "isactive": uq.isactive,
+        "iscompleted": uq.iscompleted,
+        "completeddate": uq.completeddate.isoformat() if uq.completeddate else None,
+    }
+
+def as_event_dict(ev: Event):
+    return {
+        "eventid": ev.eventid,
+        "userid": ev.userid,
+        "userquestid": ev.userquestid,
+        "receiptid": ev.receiptid,
+        "tripid": ev.tripid,
+        "description": ev.description,
+        "type": ev.type,
+        "emissions": ev.emissions,
+        "datetime": ev.datetime.isoformat() if ev.datetime else None,
+    }
+
+def _month_bounds(year: int, month: int):
+    start = datetime(year, month, 1)
+    end = datetime(year + 1, 1, 1) if month == 12 else datetime(year, month + 1, 1)
+    return start, end
+
+# ---------- misc / health ----------
 @api.get("/ping")
 def ping():
     return jsonify({"ok": True, "point_kg_per_point": POINT_KG_PER_POINT})
 
-@api.get("/healthz")
-def healthz():
-    # Surface readiness and memory-heavy bits
-    return jsonify({
-        "ok": True,
-        "emissions_ready": _emissions_ready,
-        "emissions_loaded": bool(df_emissions is not None and df_category_emissions is not None),
-        "items_index": bool(_items_index is not None),
-        "category_index": bool(_cat_index is not None),
-    })
-
-# -----------------------------------------------------------------------------
-# Error handlers (JSON everywhere)
-# -----------------------------------------------------------------------------
-@app.errorhandler(400)
-def _bad_request(e):
-    return _json({"error": "bad_request", "detail": getattr(e, "description", str(e))}, 400)
-
-@app.errorhandler(404)
-def _not_found(e):
-    return _json({"error": "not_found", "detail": getattr(e, "description", str(e))}, 404)
-
-@app.errorhandler(409)
-def _conflict(e):
-    return _json({"error": "conflict", "detail": getattr(e, "description", str(e))}, 409)
-
-@app.errorhandler(500)
-def _server_error(e):
-    log.exception("Unhandled 500: %s", e)
-    return _json({"error": "server_error"}, 500)
-
-# -----------------------------------------------------------------------------
-# Users
-# -----------------------------------------------------------------------------
+# ---------- Users ----------
 @api.get("/users")
 def list_users():
-    with SessionLocal() as s:
-        rows = s.execute(select(User).order_by(User.userid)).scalars().all()
+    session = SessionLocal()
+    try:
+        rows = session.execute(select(User).order_by(User.userid)).scalars().all()
         return jsonify([as_user_dict(u) for u in rows])
+    finally:
+        session.close()
 
 @api.get("/users/<int:userid>")
 def get_user(userid):
-    with SessionLocal() as s:
-        u = s.get(User, userid) or abort(404, description="User not found")
+    session = SessionLocal()
+    try:
+        u = session.get(User, userid)
+        if not u:
+            abort(404, description="User not found")
         return jsonify(as_user_dict(u))
+    finally:
+        session.close()
 
 @api.post("/users")
 def create_user():
-    data = request.get_json(force=True) or {}
+    data = request.get_json(force=True)
     name = (data.get("name") or "").strip()
     if not name or len(name) > 16:
         abort(400, description="name is required and must be <= 16 chars")
-    with SessionLocal() as s:
+
+    session = SessionLocal()
+    try:
         u = User(name=name, ecopetmood=0, carbonpoints=0)
-        s.add(u); s.commit(); s.refresh(u)
-        return _json(as_user_dict(u), 201)
+        session.add(u)
+        session.commit()
+        session.refresh(u)
+        return jsonify(as_user_dict(u)), 201
+    finally:
+        session.close()
 
 @api.patch("/users/<int:userid>")
 def update_user(userid):
-    data = request.get_json(force=True) or {}
-    with SessionLocal() as s:
-        u = s.get(User, userid) or abort(404, description="User not found")
+    data = request.get_json(force=True)
+    session = SessionLocal()
+    try:
+        u = session.get(User, userid)
+        if not u:
+            abort(404, description="User not found")
+
         if "name" in data:
             name = (data["name"] or "").strip()
-            if not name or len(name) > 16: abort(400, description="name must be non-empty and <= 16 chars")
+            if not name or len(name) > 16:
+                abort(400, description="name must be non-empty and <= 16 chars")
             u.name = name
+
         if "ecopetmood" in data:
             mood = int(data["ecopetmood"])
-            if mood < 0 or mood > 100: abort(400, description="ecopetmood must be 0..100")
+            if mood < 0 or mood > 100:
+                abort(400, description="ecopetmood must be 0..100")
             u.ecopetmood = mood
+
         if "carbonpoints" in data:
             pts = int(data["carbonpoints"])
-            if pts < 0: abort(400, description="carbonpoints must be >= 0")
+            if pts < 0:
+                abort(400, description="carbonpoints must be >= 0")
             u.carbonpoints = pts
+
         if "weekly_emissions_saved" in data:
             wes = float(data["weekly_emissions_saved"])
-            if wes > 0: abort(400, description="weekly_emissions_saved must be <= 0")
+            if wes > 0:
+                abort(400, description="weekly_emissions_saved must be <= 0")
             _set_wes(u, wes)
+
         if "weekly_emissions_produced" in data:
             wep = float(data["weekly_emissions_produced"])
-            if wep < 0: abort(400, description="weekly_emissions_produced must be >= 0")
+            if wep < 0:
+                abort(400, description="weekly_emissions_produced must be >= 0")
             _set_wep(u, wep)
-        s.commit()
-        return jsonify(as_user_dict(u))
 
-# -----------------------------------------------------------------------------
-# UserQuests
-# -----------------------------------------------------------------------------
+        session.commit()
+        return jsonify(as_user_dict(u))
+    finally:
+        session.close()
+
+# ---------- UserQuests ----------
 @api.get("/users/<int:userid>/userquests")
 def list_userquests(userid):
     status = (request.args.get("status") or "active").lower().strip()
-    with SessionLocal() as s:
-        s.get(User, userid) or abort(404, description="User not found")
+    session = SessionLocal()
+    try:
+        u = session.get(User, userid)
+        if not u:
+            abort(404, description="User not found")
+
         stmt = (
             select(UserQuest, Quest)
             .join(Quest, Quest.questid == UserQuest.questid)
             .where(UserQuest.userid == userid)
             .order_by(UserQuest.userquestid.desc())
         )
+
         if status == "active":
             stmt = stmt.where(UserQuest.isactive == True, UserQuest.iscompleted == False)  # noqa: E712
         elif status == "completed":
             stmt = stmt.where(UserQuest.iscompleted == True)  # noqa: E712
         elif status != "all":
             abort(400, description="status must be active|completed|all")
-        rows = s.execute(stmt).all()
+
+        rows = session.execute(stmt).all()
         return jsonify([{**as_userquest_dict(uq), "quest": as_quest_dict(q)} for uq, q in rows])
+    finally:
+        session.close()
 
 @api.get("/userquests/<int:userquestid>")
 def get_userquest(userquestid):
-    with SessionLocal() as s:
-        uq = s.get(UserQuest, userquestid) or abort(404, description="UserQuest not found")
-        q = s.get(Quest, uq.questid)
+    session = SessionLocal()
+    try:
+        uq = session.get(UserQuest, userquestid)
+        if not uq:
+            abort(404, description="UserQuest not found")
+        q = session.get(Quest, uq.questid)
         return jsonify({**as_userquest_dict(uq), "quest": as_quest_dict(q) if q else None})
+    finally:
+        session.close()
 
 @api.post("/users/<int:userid>/quests")
 def assign_quests(userid):
-    data = request.get_json(force=True) or {}
+    data = request.get_json(force=True)
     questids = list({int(q) for q in data.get("questids", [])})
-    if not questids: abort(400, description="questids required")
-    with SessionLocal() as s:
-        s.get(User, userid) or abort(404, description="User not found")
-        existing_qids = set(q.questid for q in s.execute(
+    if not questids:
+        abort(400, description="questids required")
+
+    session = SessionLocal()
+    try:
+        if not session.get(User, userid):
+            abort(404, description="User not found")
+
+        existing_qids = set(q.questid for q in session.execute(
             select(Quest).where(Quest.questid.in_(questids))
         ).scalars().all())
         missing = set(questids) - existing_qids
-        if missing: abort(400, description=f"Unknown questids: {sorted(missing)}")
+        if missing:
+            abort(400, description=f"Unknown questids: {sorted(missing)}")
+
         created = []
         for qid in sorted(existing_qids):
             uq = UserQuest(userid=userid, questid=qid, isactive=True, iscompleted=False)
-            s.add(uq); created.append(uq)
-        s.commit()
-        return _json([as_userquest_dict(uq) for uq in created], 201)
+            session.add(uq); created.append(uq)
+
+        session.commit()
+        return jsonify([as_userquest_dict(uq) for uq in created]), 201
+    finally:
+        session.close()
 
 @api.post("/users/<int:userid>/quests/assign_random")
 def assign_random_quests(userid):
     data = request.get_json(silent=True) or {}
     count = int(data.get("count", 3)); diffs = data.get("difficulty") or []
-    if count <= 0: abort(400, description="count must be > 0")
-    with SessionLocal() as s:
-        s.get(User, userid) or abort(404, description="User not found")
-        existing_qids = set(qid for (qid,) in s.execute(
+    if count <= 0:
+        abort(400, description="count must be > 0")
+
+    session = SessionLocal()
+    try:
+        if not session.get(User, userid):
+            abort(404, description="User not found")
+
+        existing_qids = set(qid for (qid,) in session.execute(
             select(UserQuest.questid).where(UserQuest.userid == userid)
         ).all())
+
         q = select(Quest).where(~Quest.questid.in_(existing_qids))
         if diffs: q = q.where(Quest.difficulty.in_(diffs))
-        picks = s.execute(q.order_by(func.random()).limit(count)).scalars().all()
+        picks = session.execute(q.order_by(func.random()).limit(count)).scalars().all()
+
         if not picks:
-            return _json({"created": [], "note": "no quests available to assign"}, 200)
+            return jsonify({"created": [], "note": "no quests available to assign"}), 200
+
         created = []
         for quest in picks:
             uq = UserQuest(userid=userid, questid=quest.questid, isactive=True, iscompleted=False)
-            s.add(uq); created.append(uq)
-        s.commit()
-        return _json([as_userquest_dict(uq) for uq in created], 201)
+            session.add(uq); created.append(uq)
 
-# -----------------------------------------------------------------------------
-# Complete quest
-# -----------------------------------------------------------------------------
+        session.commit()
+        return jsonify([as_userquest_dict(uq) for uq in created]), 201
+    finally:
+        session.close()
+
+# ---------- Complete a userquest ----------
 @api.post("/userquests/<int:userquestid>/complete")
 def complete_userquest(userquestid):
     data = request.get_json(silent=True) or {}
     when = data.get("completeddate"); mood_delta = int(data.get("mood_delta", 10))
-    with SessionLocal() as s:
-        uq = s.get(UserQuest, userquestid) or abort(404, description="UserQuest not found")
+
+    session = SessionLocal()
+    try:
+        uq = session.get(UserQuest, userquestid)
+        if not uq: abort(404, description="UserQuest not found")
         if uq.iscompleted: abort(409, description="UserQuest already completed")
-        u = s.get(User, uq.userid); q = s.get(Quest, uq.questid)
+
+        u = session.get(User, uq.userid); q = session.get(Quest, uq.questid)
         if not (u and q): abort(400, description="User or Quest missing")
+
         uq.iscompleted = True
         uq.completeddate = datetime.fromisoformat(when) if when else datetime.utcnow()
+
         if q.emissions is not None and float(q.emissions) != 0.0:
             ev = Event(userid=u.userid, userquestid=uq.userquestid,
-                       description=f"Completed quest: {q.description}", type="Quest",
-                       emissions=float(q.emissions), datetime=uq.completeddate)
-            s.add(ev); _bump_weekly(u, ev.emissions)
+                       description=f"Completed quest: {q.description}",
+                       type="Quest", emissions=float(q.emissions),
+                       datetime=uq.completeddate)
+            session.add(ev); _bump_weekly(u, ev.emissions)
         else:
             if POINT_KG_PER_POINT > 0 and (q.reward or 0) > 0:
                 evp = Event(userid=u.userid, userquestid=uq.userquestid,
@@ -382,55 +344,60 @@ def complete_userquest(userquestid):
                             type="Points",
                             emissions=-(POINT_KG_PER_POINT * float(q.reward or 0)),
                             datetime=uq.completeddate)
-                s.add(evp); _bump_weekly(u, evp.emissions)
+                session.add(evp); _bump_weekly(u, evp.emissions)
+
         u.carbonpoints = max(0, (u.carbonpoints or 0) + (q.reward or 0))
         u.ecopetmood = min(100, max(0, (u.ecopetmood or 0) + mood_delta))
-        s.commit()
+        session.commit()
         return jsonify({"userquest": as_userquest_dict(uq), "user": as_user_dict(u),
                         "point_kg_per_point": POINT_KG_PER_POINT})
+    finally:
+        session.close()
 
-# -----------------------------------------------------------------------------
-# Events
-# -----------------------------------------------------------------------------
+# ---------- Events ----------
 @api.get("/users/<int:userid>/events")
 def user_events(userid):
     limit = int(request.args.get("limit", 50))
-    limit = max(1, min(limit, 200))
-    with SessionLocal() as s:
-        s.get(User, userid) or abort(404, description="User not found")
-        rows = s.execute(
+    session = SessionLocal()
+    try:
+        if not session.get(User, userid):
+            abort(404, description="User not found")
+        rows = session.execute(
             select(Event).where(Event.userid == userid)
             .order_by(Event.datetime.desc()).limit(limit)
         ).scalars().all()
         return jsonify([as_event_dict(e) for e in rows])
+    finally:
+        session.close()
 
-# -----------------------------------------------------------------------------
-# Conversions
-# -----------------------------------------------------------------------------
+# ---------- Conversions ----------
 @api.get("/conversions")
 def list_conversions():
-    with SessionLocal() as s:
-        rows = s.execute(
+    session = SessionLocal()
+    try:
+        rows = session.execute(
             select(EmissionConversionSaving).order_by(EmissionConversionSaving.metricid)
         ).scalars().all()
         return jsonify([{
             "metricid": r.metricid, "name": r.name, "description": r.description, "emissionsperx": r.emissionsperx
         } for r in rows])
+    finally:
+        session.close()
 
-# -----------------------------------------------------------------------------
-# Dashboard
-# -----------------------------------------------------------------------------
+# ---------- Dashboard ----------
 @api.get("/users/<int:userid>/dashboard")
 def user_dashboard(userid):
-    with SessionLocal() as s:
-        u = s.get(User, userid) or abort(404, description="User not found")
-        active_count = s.execute(select(func.count()).select_from(UserQuest).where(
+    session = SessionLocal()
+    try:
+        u = session.get(User, userid)
+        if not u: abort(404, description="User not found")
+        active_count = session.execute(select(func.count()).select_from(UserQuest).where(
             UserQuest.userid == userid, UserQuest.isactive == True, UserQuest.iscompleted == False  # noqa: E712
         )).scalar_one()
-        completed_count = s.execute(select(func.count()).select_from(UserQuest).where(
+        completed_count = session.execute(select(func.count()).select_from(UserQuest).where(
             UserQuest.userid == userid, UserQuest.iscompleted == True  # noqa: E712
         )).scalar_one()
-        total_emissions = s.execute(select(func.coalesce(func.sum(Event.emissions), 0.0)).where(
+        total_emissions = session.execute(select(func.coalesce(func.sum(Event.emissions), 0.0)).where(
             Event.userid == userid, Event.type == "Quest"
         )).scalar_one()
         return jsonify({
@@ -439,41 +406,42 @@ def user_dashboard(userid):
             "completed_quests": int(completed_count),
             "total_emissions_saved": float(total_emissions),
         })
+    finally:
+        session.close()
 
-# -----------------------------------------------------------------------------
-# Monthly Emissions
-# -----------------------------------------------------------------------------
+# ---------- Monthly Emissions ----------
 @api.get("/users/<int:userid>/emissions/monthly")
 def user_monthly_emissions(userid):
     now = datetime.utcnow()
     year = int(request.args.get("year", now.year))
     month = int(request.args.get("month", now.month))
     if month < 1 or month > 12: abort(400, description="month must be 1..12")
-    with SessionLocal() as s:
-        user = s.get(User, userid) or abort(404, description="User not found")
+
+    session = SessionLocal()
+    try:
+        user = session.get(User, userid)
+        if not user: abort(404, description="User not found")
         start, end = _month_bounds(year, month)
-        total_sum = s.execute(select(func.coalesce(func.sum(Event.emissions), 0.0))
-                              .where(Event.userid == userid, Event.datetime >= start, Event.datetime < end)
-                             ).scalar_one()
-        emitted_pos = s.execute(select(func.coalesce(func.sum(Event.emissions), 0.0))
-                                .where(Event.userid == userid, Event.datetime >= start, Event.datetime < end, Event.emissions > 0.0)
-                               ).scalar_one()
-        saved_raw = s.execute(select(func.coalesce(func.sum(Event.emissions), 0.0))
-                              .where(Event.userid == userid, Event.datetime >= start, Event.datetime < end, Event.emissions < 0.0)
-                             ).scalar_one()
+
+        total_sum = session.execute(select(func.coalesce(func.sum(Event.emissions), 0.0))
+            .where(Event.userid == userid, Event.datetime >= start, Event.datetime < end)).scalar_one()
+        emitted_pos = session.execute(select(func.coalesce(func.sum(Event.emissions), 0.0))
+            .where(Event.userid == userid, Event.datetime >= start, Event.datetime < end, Event.emissions > 0.0)).scalar_one()
+        saved_raw = session.execute(select(func.coalesce(func.sum(Event.emissions), 0.0))
+            .where(Event.userid == userid, Event.datetime >= start, Event.datetime < end, Event.emissions < 0.0)).scalar_one()
         saved_mag = abs(float(saved_raw)) if saved_raw else 0.0
 
         week_of_month = cast((func.floor((func.extract("day", Event.datetime) - 1) / 7) + 1), Integer)
-        weekly_rows = s.execute(select(
+        weekly_rows = session.execute(select(
             week_of_month.label("week"),
             func.coalesce(func.sum(Event.emissions), 0.0).label("kg"),
         ).where(Event.userid == userid, Event.datetime >= start, Event.datetime < end)
          .group_by(week_of_month).order_by(week_of_month.asc())).all()
         weekly = [{"week": int(w.week), "kg": float(w.kg)} for w in weekly_rows]
 
-        type_rows = s.execute(select(Event.type.label("type"), func.coalesce(func.sum(Event.emissions), 0.0).label("kg"))
-                              .where(Event.userid == userid, Event.datetime >= start, Event.datetime < end)
-                              .group_by(Event.type).order_by(Event.type.asc())).all()
+        type_rows = session.execute(select(Event.type.label("type"), func.coalesce(func.sum(Event.emissions), 0.0).label("kg"))
+            .where(Event.userid == userid, Event.datetime >= start, Event.datetime < end)
+            .group_by(Event.type).order_by(Event.type.asc())).all()
         breakdown = [{"type": r.type, "kg": float(r.kg)} for r in type_rows if r.type is not None]
 
         return jsonify({
@@ -483,10 +451,15 @@ def user_monthly_emissions(userid):
             "weekly": weekly,
             "breakdown_by_type": breakdown,
         })
+    finally:
+        session.close()
 
-# -----------------------------------------------------------------------------
-# Receipt Parsing (base64)
-# -----------------------------------------------------------------------------
+# ---------- Photo Extraction placeholder ----------
+@api.post("/users/<int:userid>/emissions/monthly")
+def user_photo_info():
+    return jsonify({"ok": False, "error": "not implemented"}), 501
+
+# ---------- Receipt Parsing ----------
 def _normalize_b64(s: str) -> bytes:
     s = re.sub(r'^data:image/[^;]+;base64,', '', s, flags=re.I)
     s = s.replace('-', '+').replace('_', '/')
@@ -499,74 +472,71 @@ def update_receipt():
     data = request.get_json(silent=True) or {}
     b64s = data.get("image_base64")
     if not b64s:
-        return _json({"error": "No image_base64 field"}, 400)
+        return jsonify({"error": "No image_base64 field"}), 400
     try:
-        # Size guard (prevents OOM from huge images)
-        approx_bytes = int(len(b64s) * 0.75)  # rough base64->bytes estimate
+        approx_bytes = int(len(b64s) * 0.75)
         if approx_bytes > MAX_IMAGE_BYTES:
-            return _json({"error": f"image too large; limit {MAX_IMAGE_BYTES} bytes"}, 413)
-
-        _lazy_imports()
-        if _receipt_mod is None:
-            return _json({"error": "parser unavailable"}, 503)
+            return jsonify({"error": f"image too large; limit {MAX_IMAGE_BYTES} bytes"}), 413
 
         img_bytes = _normalize_b64(b64s)
         with Image.open(BytesIO(img_bytes)) as im:
             im.verify()
 
-        items_parsed = _receipt_mod.extract_items_from_bytes(
-            img_bytes,
-            key_path=os.environ.get(
-                "GCP_SA_JSON_PATH",
-                r"backend/receipt_update/savvy-girder-472600-s1-07e7b3e23118.json",
-            ),
-        )
+        key_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS") or \
+                   r"backend/receipt_update/savvy-girder-472600-s1-07e7b3e23118.json"
+
+        items_parsed = extract_items_from_bytes(img_bytes, key_path=key_path)
         return jsonify({"receipt_json": items_parsed})
     except UnidentifiedImageError:
-        return _json({"error": "invalid_image"}, 400)
+        return jsonify({"error": "invalid_image"}), 400
     except Exception as e:
-        log.exception("Parsing failed: %s", e)
-        return _json({"error": "parsing_failed", "detail": str(e)}, 500)
+        return jsonify({"error": "Parsing failed", "detail": str(e)}), 500
 
-# -----------------------------------------------------------------------------
-# Map Receipt
-# -----------------------------------------------------------------------------
-@api.post("/users/<int:userid>/map-receipt")
+# ---------- Map Receipt & Create Event/Receipt ----------
+@api.post("/users/<int:userid>/map-receipt")  # <-- fixed leading slash
 def map_receipt_route(userid):
-    _ensure_emissions_loaded()  # lazy & safe
-    if not _emissions_ready:
-        return _json({"error": "emissions_engine_unavailable"}, 503)
-
     receipt_json = request.get_json(silent=True)
     if receipt_json is None:
-        return _json({"error": "invalid_json"}, 400)
+        return jsonify({"error": "invalid_json"}), 400
 
-    with SessionLocal() as s:
-        df_filtered = _emissions_mod.map_receipt_with_emissions(
-            receipt_json, _items_index, _cat_index, df_emissions, df_category_emissions
+    session = SessionLocal()
+    try:
+        df_filtered = map_receipt_with_emissions(
+            receipt_json,
+            items_index,
+            cat_index,
+            df_emissions,
+            df_category_emissions
         )
+
         total_emissions = float(df_filtered["TotalEmissions"].sum())
 
         gr = GroceryReceipt(userid=userid, totalemissions=total_emissions, date=datetime.utcnow())
-        s.add(gr); s.flush()
-        ev = Event(userid=userid, receiptid=gr.receiptid,
-                   description=f"Grocery receipt with {len(df_filtered)} items",
-                   type="Grocery", emissions=total_emissions, datetime=datetime.utcnow())
-        s.add(ev)
-        u = s.get(User, userid) or abort(404, description="User not found")
-        _bump_weekly(u, total_emissions)
-        s.commit()
-        return jsonify(df_filtered.to_dict(orient="records"))
+        session.add(gr)
+        session.flush()
 
-# -----------------------------------------------------------------------------
-# Mount API
-# -----------------------------------------------------------------------------
+        ev = Event(
+            userid=userid,
+            receiptid=gr.receiptid,
+            description=f"Grocery receipt with {len(df_filtered)} items",
+            type="Grocery",
+            emissions=total_emissions,
+            datetime=datetime.utcnow(),
+        )
+        session.add(ev)
+
+        u = session.get(User, userid)
+        if not u:
+            abort(404, description="User not found")
+        _bump_weekly(u, total_emissions)
+
+        session.commit()
+        return jsonify(df_filtered.to_dict(orient="records"))
+    finally:
+        session.close()
+
+# Mount the blueprint
 app.register_blueprint(api)
 
-# -----------------------------------------------------------------------------
-# Main (local)
-# -----------------------------------------------------------------------------
 if __name__ == "__main__":
-    # Local dev: python -m backend.app
-    port = int(os.environ.get("PORT", "5000"))  # Render will set $PORT
-    app.run(host="0.0.0.0", port=port, debug=True)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "5000")), debug=True)

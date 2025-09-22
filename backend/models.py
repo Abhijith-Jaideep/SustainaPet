@@ -51,15 +51,16 @@ class Event(Base):
     userid = Column(Integer, ForeignKey('User.userid', ondelete="CASCADE"), nullable=False)
     userquestid = Column(Integer, ForeignKey('userquests.userquestid', ondelete="CASCADE"), nullable=True)
 
-    receiptid = Column(Integer)
+    receiptid = Column(Integer, ForeignKey('GroceryReceipt.receiptid', ondelete="CASCADE"), nullable=True)
     tripid = Column(Integer)
     description = Column(Text, nullable=False)
-    type = Column(String(7), nullable=False)         # enum in DB → String here
+    type = Column(String(20), nullable=False)  
     emissions = Column(Float, nullable=False)
     datetime = Column(DateTime, nullable=False)
 
     user = relationship("User")
     userquest = relationship("UserQuest")
+    receipt = relationship("GroceryReceipt", back_populates="events") 
 
 class EmissionConversionSaving(Base):
     __tablename__ = "emissionconversionssaving"
@@ -67,3 +68,15 @@ class EmissionConversionSaving(Base):
     name = Column(String(64), nullable=False)
     description = Column(Text)
     emissionsperx = Column(Float, nullable=False)
+
+class GroceryReceipt(Base):
+    __tablename__ = "GroceryReceipt"
+
+    receiptid = Column(Integer, primary_key=True, autoincrement=True)
+    userid = Column(Integer, ForeignKey('User.userid', ondelete="CASCADE"), nullable=False)
+    totalemissions = Column(Float, nullable=False, default=0.0)
+    date = Column(DateTime, nullable=False)
+
+    # Relationships
+    user = relationship("User", backref="groceryreceipts")
+    events = relationship("Event", back_populates="receipt")

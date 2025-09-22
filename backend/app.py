@@ -13,7 +13,7 @@ from backend.receipt_update.receipt_parser import parse_items_only_from_lines
 from backend.emissions_models.ItemToDataset import build_category_index, build_index_from_emissions, map_receipt_with_emissions
 
 from .db import SessionLocal
-from .models import User, Quest, UserQuest, Event, EmissionConversionSaving
+from .models import User, Quest, UserQuest, Event, EmissionConversionSaving, GroceryReceipt
 from flask_sqlalchemy import SQLAlchemy
 from backend.emissions_models.item_info import map_receipt 
 from backend.receipt_update.receipt_parser import extract_items_from_bytes
@@ -80,6 +80,14 @@ def as_event_dict(ev: Event):
         "type": ev.type,
         "emissions": ev.emissions,
         "datetime": ev.datetime.isoformat() if ev.datetime else None,
+    }
+
+def as_groceryreceipt_dict(gr: GroceryReceipt):
+    return {
+        "receiptid": gr.receiptid,
+        "userid": gr.userid,
+        "totalemissions": gr.totalemissions,
+        "date": gr.date.isoformat() if gr.date else None,
     }
 
 def _month_bounds(year: int, month: int):
@@ -600,6 +608,39 @@ def map_receipt_route():
     df_emissions, 
     df_category_emissions
     )
+
+    # Compute total emissions
+    total_emissions = float(df_filtered["TotalEmissions"].sum())
+
+    # Require userid in request
+    user_id = receipt_json.get("userid")
+    if not user_id:
+        return jsonify({"error": "Missing userid in request"}), 400
+
+    session = SessionLocal()
+
+    # Insert into GroceryReceipt (ORM)
+    gr = GroceryReceipt(
+        userid=user_id,
+        totalemissions=total_emissions,
+        date=datetime.utcnow(),
+    )
+    session.add(gr)
+    session.flush()  # ensures receiptid is populated without commit
+
+    # Create linked Event
+    ev = Event(
+        userid=user_id,
+        receiptid=gr.receiptid,  
+        description=f"Grocery receipt with {len(df_filtered)} items",
+        type="Grocery",   # must exist in event_type_enum
+        emissions=total_emissions,
+        datetime=datetime.utcnow(),
+    )
+    session.add(ev)
+
+    session.commit()
+    session.close()
     
     return jsonify(df_filtered.to_dict(orient="records"))
 

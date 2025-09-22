@@ -8,3 +8,4 @@ pandas
 scikit-learn
 nltk
 sentence_transformers
+google-cloud-vision

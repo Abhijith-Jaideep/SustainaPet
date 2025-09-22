@@ -121,7 +121,7 @@ def build_index_from_emissions(df_emissions: pd.DataFrame, name_col="Name"):
 # -----------------------------------
 # Build semantic category index
 # -----------------------------------
-def build_category_index(categories, model_name="all-mpnet-base-v2", device=None):
+def build_category_index(categories, model_name="all-MiniLM-L6-v2", device=None):
     model = SentenceTransformer(model_name, device=device)
     labels = [normalize_name(c) for c in categories]
     emb = model.encode(labels, normalize_embeddings=True)

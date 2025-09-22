@@ -76,7 +76,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
     // === TOP CARDS (weekly): display exactly what backend sends ===
     final emittedWeekly = user.weeklyEmissionsProduced; // e.g., 0.0
-    final savedWeekly   = user.weeklyEmissionsSaved;    // e.g., -2.55
+    final savedWeekly = user.weeklyEmissionsSaved; // e.g., -2.55
 
     // Conversions use monthly net (absolute magnitude)
     double adjustedNet = monthly.netKg;
@@ -182,10 +182,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
 
     return _DashData(
-      emittedKg: emittedWeekly,     // weekly_emissions_produced (as-is)
-      savedKg: savedWeekly,         // weekly_emissions_saved (as-is; may be negative)
+      emittedKg: emittedWeekly, // weekly_emissions_produced (as-is)
+      savedKg: savedWeekly, // weekly_emissions_saved (as-is; may be negative)
       totalDisplayKg: totalDisplayKg, // abs(monthly net) for conversions
-      weeklyNet: weeklyNet,         // monthly chart (with pending bump if any)
+      weeklyNet: weeklyNet, // monthly chart (with pending bump if any)
       weekLabels: weekLabels,
       metrics: metrics,
       events: events,
@@ -228,141 +228,122 @@ class _DashboardScreenState extends State<DashboardScreen> {
             if (!snap.hasData) return const Center(child: Text('No data available.'));
 
             final data = snap.data!;
+            final isNarrow = MediaQuery.of(context).size.width < 380;
+
+            // Build the two top cards once so we can reuse for Row/Column layout.
+            final emittedCard = Expanded(
+              child: _CardShell(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const _SectionHeader(
+                      icon: Icons.arrow_upward_rounded,
+                      label: 'Carbon Emitted',
+                    ),
+                    const SizedBox(height: 8),
+                    SizedBox(
+                      width: double.infinity,
+                      child: FittedBox(
+                        alignment: Alignment.bottomLeft,
+                        fit: BoxFit.scaleDown,
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          children: [
+                            Text(
+                              data.emittedKg.toStringAsFixed(1),
+                              style: const TextStyle(
+                                fontSize: 34,
+                                fontWeight: FontWeight.w800,
+                                color: Color(0xFFD64545),
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+                            const Padding(
+                              padding: EdgeInsets.only(bottom: 4),
+                              child: Text(
+                                'kg',
+                                style: TextStyle(
+                                  fontSize: 16,
+                                  color: Colors.black54,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+
+            final savedCard = Expanded(
+              child: _CardShell(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const _SectionHeader(
+                      icon: Icons.arrow_downward_rounded,
+                      label: 'Carbon Saved',
+                    ),
+                    const SizedBox(height: 8),
+                    SizedBox(
+                      width: double.infinity,
+                      child: FittedBox(
+                        alignment: Alignment.bottomLeft,
+                        fit: BoxFit.scaleDown,
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          children: [
+                            // Show as positive for nicer UI, underlying value may be negative.
+                            Text(
+                              data.savedKg.abs().toStringAsFixed(1),
+                              style: const TextStyle(
+                                fontSize: 34,
+                                fontWeight: FontWeight.w800,
+                                color: Color(0xFF2E7D32),
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+                            const Padding(
+                              padding: EdgeInsets.only(bottom: 4),
+                              child: Text(
+                                'kg',
+                                style: TextStyle(
+                                  fontSize: 16,
+                                  color: Colors.black54,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+
             return SingleChildScrollView(
               padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  // === Top row: Carbon Emitted + Carbon Saved (WEEKLY, as-is) ===
-                  Row(
-                    children: [
-                      Expanded(
-                        child: _CardShell(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              const _SectionHeader(
-                                icon: Icons.arrow_upward_rounded,
-                                label: 'Carbon Emitted',
-                              ),
-                              const SizedBox(height: 8),
-                              SizedBox(
-                                width: double.infinity,
-                                child: FittedBox(
-                                  alignment: Alignment.bottomLeft,
-                                  fit: BoxFit.scaleDown,
-                                  child: Row(
-                                    crossAxisAlignment: CrossAxisAlignment.end,
-                                    children: const [
-                                      // value
-                                    ],
-                                  ),
-                                ),
-                              ),
-                              SizedBox(
-                                width: double.infinity,
-                                child: FittedBox(
-                                  alignment: Alignment.bottomLeft,
-                                  fit: BoxFit.scaleDown,
-                                  child: Row(
-                                    crossAxisAlignment: CrossAxisAlignment.end,
-                                    children: [
-                                      Text(
-                                        // populated below via builder
-                                        '',
-                                        // placeholder; real value via Builder
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ),
-                              Builder(
-                                builder: (_) => SizedBox(
-                                  width: double.infinity,
-                                  child: FittedBox(
-                                    alignment: Alignment.bottomLeft,
-                                    fit: BoxFit.scaleDown,
-                                    child: Row(
-                                      crossAxisAlignment: CrossAxisAlignment.end,
-                                      children: [
-                                        Text(
-                                          data.emittedKg.toStringAsFixed(1),
-                                          style: const TextStyle(
-                                            fontSize: 34,
-                                            fontWeight: FontWeight.w800,
-                                            color: Color(0xFFD64545),
-                                          ),
-                                        ),
-                                        const SizedBox(width: 6),
-                                        const Padding(
-                                          padding: EdgeInsets.only(bottom: 4),
-                                          child: Text(
-                                            'kg',
-                                            style: TextStyle(
-                                              fontSize: 16,
-                                              color: Colors.black54,
-                                              fontWeight: FontWeight.w700,
-                                            ),
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: _CardShell(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              const _SectionHeader(
-                                icon: Icons.arrow_downward_rounded,
-                                label: 'Carbon Saved',
-                              ),
-                              const SizedBox(height: 8),
-                              SizedBox(
-                                width: double.infinity,
-                                child: FittedBox(
-                                  alignment: Alignment.bottomLeft,
-                                  fit: BoxFit.scaleDown,
-                                  child: Row(
-                                    crossAxisAlignment: CrossAxisAlignment.end,
-                                    children: [
-                                      Text(
-                                        data.savedKg.toStringAsFixed(1),
-                                        style: const TextStyle(
-                                          fontSize: 34,
-                                          fontWeight: FontWeight.w800,
-                                          color: Color(0xFF2E7D32),
-                                        ),
-                                      ),
-                                      const SizedBox(width: 6),
-                                      const Padding(
-                                        padding: EdgeInsets.only(bottom: 4),
-                                        child: Text(
-                                          'kg',
-                                          style: TextStyle(
-                                            fontSize: 16,
-                                            color: Colors.black54,
-                                            fontWeight: FontWeight.w700,
-                                          ),
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
+                  // === Top row: Carbon Emitted + Carbon Saved (WEEKLY) ===
+                  if (isNarrow) ...[
+                    emittedCard,
+                    const SizedBox(height: 12),
+                    savedCard,
+                  ] else
+                    Row(
+                      children: [
+                        emittedCard,
+                        const SizedBox(width: 12),
+                        savedCard,
+                      ],
+                    ),
 
                   const SizedBox(height: 16),
 
@@ -437,10 +418,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
 class _DashData {
   // weekly, shown as-is in top cards
-  final double emittedKg;       // weekly_emissions_produced
-  final double savedKg;         // weekly_emissions_saved (may be negative)
+  final double emittedKg; // weekly_emissions_produced
+  final double savedKg; // weekly_emissions_saved (may be negative)
   // monthly visuals
-  final double totalDisplayKg;  // abs(monthly net) for conversions
+  final double totalDisplayKg; // abs(monthly net) for conversions
   final List<double> weeklyNet; // monthly weekly buckets (signed)
   final List<String> weekLabels;
   final List<_Metric> metrics;
@@ -538,8 +519,8 @@ class _EventsTable extends StatelessWidget {
             Container(
               color: const Color(0xFFF7F9FA),
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-              child: Row(
-                children: const [
+              child: const Row(
+                children: [
                   Expanded(
                     flex: 6,
                     child: Text(
@@ -741,7 +722,6 @@ class _ConversionGrid extends StatelessWidget {
     final cols = width > 760 ? 3 : 2;
 
     final tileHeight = width > 760 ? 160.0 : 190.0; // taller tiles so text never clips
-
 
     return GridView.builder(
       physics: const NeverScrollableScrollPhysics(),
@@ -1034,7 +1014,6 @@ String _formatNumber(double v) {
 }
 
 String _pad2(int n) => n < 10 ? '0$n' : '$n';
-String _fmtDate(DateTime dt) => '${dt.year}-${_pad2(dt.month)}-${_pad2(dt.day)}';
 String _fmtDateTime(DateTime dt) {
   final d = dt.toLocal();
   final y = d.year;

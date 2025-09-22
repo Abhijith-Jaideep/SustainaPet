@@ -222,6 +222,7 @@ class _GroceryScannerScreenState extends State<GroceryScannerScreen> {
     return Scaffold(
       appBar: AppBar(title: const Text('Grocery Receipt Scanner')),
       body: SafeArea(
+        top: false, // ✅ don't add extra top inset (AppBar already accounts for status bar)
         child: SingleChildScrollView(
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 16), // tighter padding, anchored to top
           child: Column(
@@ -271,19 +272,6 @@ class _GroceryScannerScreenState extends State<GroceryScannerScreen> {
                     ),
                   ),
                   const SizedBox(height: 10), // was 12
-                  SizedBox(
-                    height: 48, // was 50
-                    child: OutlinedButton.icon(
-                      onPressed: _loading ? null : _takePhoto,
-                      style: OutlinedButton.styleFrom(
-                        foregroundColor: Colors.black87,
-                        side: const BorderSide(color: Color(0xFFFFC107)),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                      ),
-                      icon: const Icon(Icons.photo_camera_outlined),
-                      label: const Text('Take Photo'),
-                    ),
-                  ),
                 ],
               ),
 
@@ -303,8 +291,7 @@ class _GroceryScannerScreenState extends State<GroceryScannerScreen> {
                 const SizedBox(height: 12), // was 16
                 Text(
                   _error!,
-                  style: theme.textTheme.bodyMedium
-                      ?.copyWith(color: Colors.red.shade700),
+                  style: theme.textTheme.bodyMedium?.copyWith(color: Colors.redAccent),
                   textAlign: TextAlign.center,
                 ),
               ],
@@ -380,9 +367,7 @@ class _GroceryScannerScreenState extends State<GroceryScannerScreen> {
 
   Widget _receiptCard(ReceiptMapRow r, ThemeData theme) {
     final name = r.item ?? r.matchedName ?? 'Item';
-    final qty = (r.displayQty == null || r.displayQty!.isEmpty)
-        ? '—'
-        : r.displayQty!;
+    final qty = (r.displayQty == null || r.displayQty!.isEmpty) ? '—' : r.displayQty!;
     final impact = _impactLabel(r);
     final impactColor = _impactColor(impact, theme);
 
@@ -428,9 +413,7 @@ class _GroceryScannerScreenState extends State<GroceryScannerScreen> {
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
                   Text(
-                    r.totalEmissions == null
-                        ? '—'
-                        : r.totalEmissions!.toStringAsFixed(2),
+                    r.totalEmissions == null ? '—' : r.totalEmissions!.toStringAsFixed(2),
                     style: TextStyle(
                       fontWeight: FontWeight.w800,
                       fontSize: 16,
@@ -567,85 +550,89 @@ class ConfirmReceiptPage extends StatelessWidget {
           onPressed: () => Navigator.of(context).pop(), // cancel
         ),
       ),
-      body: Column(
-        children: [
-          const SizedBox(height: 12),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16.0),
-            child: Row(
-              children: [
-                const Icon(Icons.insert_photo_outlined, size: 18),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    filename,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
+      body: MediaQuery.removePadding(
+        context: context,
+        removeTop: true, // ✅ start content right under the AppBar
+        child: Column(
+          children: [
+            const SizedBox(height: 8),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16.0),
+              child: Row(
+                children: [
+                  const Icon(Icons.insert_photo_outlined, size: 18),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      filename,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
+                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
-          ),
-          const SizedBox(height: 12),
-          Expanded(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(12),
-                child: Container(
-                  color: Colors.black12,
-                  child: InteractiveViewer(
-                    minScale: 0.5,
-                    maxScale: 4,
-                    child: Center(
-                      child: Image.memory(
-                        imageBytes,
-                        fit: BoxFit.contain,
-                        gaplessPlayback: true,
+            const SizedBox(height: 8),
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(12),
+                  child: Container(
+                    color: Colors.black12,
+                    child: InteractiveViewer(
+                      minScale: 0.5,
+                      maxScale: 4,
+                      child: Center(
+                        child: Image.memory(
+                          imageBytes,
+                          fit: BoxFit.contain,
+                          gaplessPlayback: true,
+                        ),
                       ),
                     ),
                   ),
                 ),
               ),
             ),
-          ),
-          const SizedBox(height: 16),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
-            child: Row(
-              children: [
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: () => Navigator.of(context).pop(_ConfirmAction.retry),
-                    icon: const Icon(Icons.refresh),
-                    label: const Text('Retry'),
-                    style: OutlinedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(vertical: 14),
-                      side: const BorderSide(color: Color(0xFFFFC107)),
-                      foregroundColor: Colors.black87,
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            const SizedBox(height: 12),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: () => Navigator.of(context).pop(_ConfirmAction.retry),
+                      icon: const Icon(Icons.refresh),
+                      label: const Text('Retry'),
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        side: const BorderSide(color: Color(0xFFFFC107)),
+                        foregroundColor: Colors.black87,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      ),
                     ),
                   ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: ElevatedButton.icon(
-                    onPressed: () => Navigator.of(context).pop(_ConfirmAction.confirm),
-                    icon: const Icon(Icons.check),
-                    label: const Text('Confirm'),
-                    style: ElevatedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(vertical: 14),
-                      backgroundColor: const Color(0xFFFFC107),
-                      foregroundColor: Colors.black87,
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: ElevatedButton.icon(
+                      onPressed: () => Navigator.of(context).pop(_ConfirmAction.confirm),
+                      icon: const Icon(Icons.check),
+                      label: const Text('Confirm'),
+                      style: ElevatedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        backgroundColor: const Color(0xFFFFC107),
+                        foregroundColor: Colors.black87,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      ),
                     ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }

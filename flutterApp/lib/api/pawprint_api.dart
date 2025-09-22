@@ -529,7 +529,7 @@ class PawprintApi {
         double? total,
         double? savings,
       }) async {
-    final uri = Uri.parse('$baseUrl/api/$userid/map-receipt');
+    final uri = Uri.parse('$baseUrl/api/users/$userid/map-receipt');
     _logUrl('POST', uri);
 
     final payload = _normalizeReceiptPayload(

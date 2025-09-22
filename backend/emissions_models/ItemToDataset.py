@@ -11,14 +11,10 @@ from nltk.stem import WordNetLemmatizer
 from sentence_transformers import SentenceTransformer, util
 import nltk
 from nltk.stem import WordNetLemmatizer
+import os
 
 # Ensure WordNet is available
-try:
-    _ = WordNetLemmatizer().lemmatize("test")
-except LookupError:
-    nltk.download("wordnet")
-    nltk.download("omw-1.4")
-
+nltk.data.path.append(os.path.join(os.path.dirname(__file__), "..", "..", "nltk_data"))
 
 # In[ ]:
 

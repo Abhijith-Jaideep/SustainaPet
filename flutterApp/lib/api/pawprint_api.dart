@@ -505,7 +505,7 @@ class PawprintApi {
   ///   - a List of item maps, or
   ///   - a Map with key 'receipt_json', or already in {items:[...]} shape
   Future<dynamic> parseReceiptFromBytes(Uint8List bytes) async {
-    final uri = Uri.parse('$baseUrl/receipt-parser'); // not under /api
+    final uri = Uri.parse('$baseUrl/api/receipt-parser'); // not under /api
     _logUrl('POST', uri);
     final body = jsonEncode({'image_base64': base64Encode(bytes)});
     final resp = await http.post(uri, headers: _headers, body: body).timeout(_parseTimeout);
@@ -529,7 +529,7 @@ class PawprintApi {
         double? total,
         double? savings,
       }) async {
-    final uri = Uri.parse('$baseUrl/$userid/map-receipt');
+    final uri = Uri.parse('$baseUrl/api/$userid/map-receipt');
     _logUrl('POST', uri);
 
     final payload = _normalizeReceiptPayload(

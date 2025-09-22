@@ -1,12 +1,15 @@
 # backend/app.py
+from __future__ import annotations
+
 import base64 as _b64
-import os, re
+import os, re, logging
 from datetime import datetime
 from io import BytesIO
+from typing import Optional, Tuple
 
 import pandas as pd
-from PIL import Image
-from flask import Flask, Blueprint, jsonify, request, abort
+from PIL import Image, UnidentifiedImageError
+from flask import Flask, Blueprint, jsonify, request, abort, g, redirect, url_for
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import select, func, cast, Integer
@@ -14,46 +17,120 @@ from sqlalchemy import select, func, cast, Integer
 from .db import SessionLocal
 from .models import User, Quest, UserQuest, Event, EmissionConversionSaving, GroceryReceipt
 
+# -----------------------------------------------------------------------------
+# App + Config
+# -----------------------------------------------------------------------------
 app = Flask(__name__)
-CORS(app, resources={r"/api/*": {"origins": "*"}})
+# CORS: allow all for /api/* (tweak via env if you want)
+CORS(app, resources={r"/api/*": {"origins": os.environ.get("CORS_ORIGINS", "*")}})
 api = Blueprint("api", __name__, url_prefix="/api")
 db = SQLAlchemy()
 
-# ------------ config ------------
-POINT_KG_PER_POINT = float(os.environ.get("POINT_KG_PER_POINT", "0.05"))
+# JSON responses should keep key order (nicer for clients)
+app.config["JSON_SORT_KEYS"] = False
 
-# ------------ lazy globals ------------
-df_emissions = None
-df_category_emissions = None
+# Be forgiving with trailing/multiple slashes
+app.url_map.strict_slashes = False
+
+# Logging
+logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
+log = app.logger
+
+# Tunables
+POINT_KG_PER_POINT = float(os.environ.get("POINT_KG_PER_POINT", "0.05"))
+MAX_IMAGE_BYTES = int(os.environ.get("MAX_IMAGE_BYTES", str(6 * 1024 * 1024)))  # 6MB default
+
+# -----------------------------------------------------------------------------
+# Lazy globals (heavy bits guarded)
+# -----------------------------------------------------------------------------
+df_emissions: Optional[pd.DataFrame] = None
+df_category_emissions: Optional[pd.DataFrame] = None
 _items_index = None
 _cat_index = None
 _emissions_mod = None   # backend.emissions_models.ItemToDataset
 _receipt_mod = None     # backend.receipt_update.receipt_parser
+_emissions_ready = False
 
-def _lazy_imports():
-    """Import heavy modules only when we actually need them."""
+def _lazy_imports() -> None:
+    """
+    Import heavy modules only when we actually need them.
+    NEVER raise — set module to None and log. Callers must handle 503 gracefully.
+    """
     global _emissions_mod, _receipt_mod
     if _emissions_mod is None:
-        import importlib
-        _emissions_mod = importlib.import_module("backend.emissions_models.ItemToDataset")
+        try:
+            import importlib
+            _emissions_mod = importlib.import_module("backend.emissions_models.ItemToDataset")
+            log.info("Lazy-imported emissions module")
+        except Exception as e:
+            _emissions_mod = None
+            log.exception("Failed to import emissions module lazily: %s", e)
+
     if _receipt_mod is None:
-        import importlib
-        _receipt_mod = importlib.import_module("backend.receipt_update.receipt_parser")
+        try:
+            import importlib
+            _receipt_mod = importlib.import_module("backend.receipt_update.receipt_parser")
+            log.info("Lazy-imported receipt parser module")
+        except Exception as e:
+            _receipt_mod = None
+            log.exception("Failed to import receipt parser module lazily: %s", e)
 
-def _ensure_emissions_loaded():
-    """Load emissions tables & build indices once, on demand."""
-    global df_emissions, df_category_emissions, _items_index, _cat_index
-    if df_emissions is not None and df_category_emissions is not None:
+def _ensure_emissions_loaded() -> None:
+    """
+    Load emissions tables & build indices once, on demand.
+    Return quickly if already loaded. Never raise — set flag and let caller 503.
+    """
+    global df_emissions, df_category_emissions, _items_index, _cat_index, _emissions_ready
+
+    if _emissions_ready and df_emissions is not None and df_category_emissions is not None:
         return
-    _lazy_imports()
-    with SessionLocal() as s:
-        conn = s.connection()
-        df_emissions = pd.read_sql('SELECT * FROM pawprint."FoodEmissions";', conn)
-        df_category_emissions = pd.read_sql('SELECT * FROM pawprint."CategoryEmissions";', conn)
-    _items_index = _emissions_mod.build_index_from_emissions(df_emissions)
-    _cat_index = _emissions_mod.build_category_index(df_category_emissions)
 
-# ------------ weekly counters shims ------------
+    _lazy_imports()
+    if _emissions_mod is None:
+        _emissions_ready = False
+        return
+
+    try:
+        with SessionLocal() as s:
+            conn = s.connection()
+            if df_emissions is None:
+                df = pd.read_sql('SELECT * FROM pawprint."FoodEmissions";', conn)
+                df_emissions = df
+                log.info("Loaded FoodEmissions rows: %s", len(df))
+            if df_category_emissions is None:
+                dfc = pd.read_sql('SELECT * FROM pawprint."CategoryEmissions";', conn)
+                df_category_emissions = dfc
+                log.info("Loaded CategoryEmissions rows: %s", len(dfc))
+
+        if _items_index is None and df_emissions is not None:
+            _items_index = _emissions_mod.build_index_from_emissions(df_emissions)
+            log.info("Built items index")
+        if _cat_index is None and df_category_emissions is not None:
+            _cat_index = _emissions_mod.build_category_index(df_category_emissions)
+            log.info("Built category index")
+
+        _emissions_ready = all([
+            df_emissions is not None,
+            df_category_emissions is not None,
+            _items_index is not None,
+            _cat_index is not None,
+        ])
+    except Exception as e:
+        _emissions_ready = False
+        log.exception("Failed to load emissions data or build indices: %s", e)
+
+# -----------------------------------------------------------------------------
+# Utilities
+# -----------------------------------------------------------------------------
+def _json(data, status=200):
+    return jsonify(data), status
+
+def _month_bounds(year: int, month: int) -> Tuple[datetime, datetime]:
+    start = datetime(year, month, 1)
+    end = datetime(year + 1, 1, 1) if month == 12 else datetime(year, month + 1, 1)
+    return start, end
+
+# Weekly counters shims (your original logic retained)
 WES_ATTR = (
     "weekly_emissions_saved"
     if hasattr(User, "weekly_emissions_saved")
@@ -73,7 +150,6 @@ def _set_wep(u: User, v: float) -> None:
 def _bump_weekly(u: User, d: float) -> None:
     _set_wep(u, _get_wep(u) + d) if d >= 0 else _set_wes(u, _get_wes(u) + d)
 
-# ------------ helpers ------------
 def as_user_dict(u: User): return {
     "userid": u.userid, "name": u.name, "ecopetmood": u.ecopetmood, "carbonpoints": u.carbonpoints,
     "weekly_emissions_saved": _get_wes(u), "weekly_emissions_produced": _get_wep(u),
@@ -93,89 +169,129 @@ def as_event_dict(ev: Event): return {
     "type": ev.type, "emissions": ev.emissions,
     "datetime": ev.datetime.isoformat() if ev.datetime else None,
 }
-def _month_bounds(year: int, month: int):
-    start = datetime(year, month, 1)
-    end = datetime(year + 1, 1, 1) if month == 12 else datetime(year, month + 1, 1)
-    return start, end
 
-# ------------ health/root (binds immediately) ------------
+# -----------------------------------------------------------------------------
+# Global request tweaks
+# -----------------------------------------------------------------------------
+@app.before_request
+def _collapse_double_slashes():
+    """
+    Normalize accidental // in paths (e.g., /api//users/... -> /api/users/...)
+    before Flask routing. Avoids 308s and duplicate work on cold start.
+    """
+    p = request.path
+    if "//" in p:
+        fixed = re.sub(r"/{2,}", "/", p)
+        qs = ("?" + request.query_string.decode()) if request.query_string else ""
+        return redirect(fixed + qs, code=301)
+
+# -----------------------------------------------------------------------------
+# Health / Root
+# -----------------------------------------------------------------------------
 @app.get("/")
 def root():
-    return jsonify({"ok": True, "service": "pawprint-backend", "point_kg_per_point": POINT_KG_PER_POINT})
+    return jsonify({
+        "ok": True,
+        "service": "pawprint-backend",
+        "point_kg_per_point": POINT_KG_PER_POINT,
+    })
 
 @api.get("/ping")
 def ping():
     return jsonify({"ok": True, "point_kg_per_point": POINT_KG_PER_POINT})
 
-# ------------ Users ------------
+@api.get("/healthz")
+def healthz():
+    # Surface readiness and memory-heavy bits
+    return jsonify({
+        "ok": True,
+        "emissions_ready": _emissions_ready,
+        "emissions_loaded": bool(df_emissions is not None and df_category_emissions is not None),
+        "items_index": bool(_items_index is not None),
+        "category_index": bool(_cat_index is not None),
+    })
+
+# -----------------------------------------------------------------------------
+# Error handlers (JSON everywhere)
+# -----------------------------------------------------------------------------
+@app.errorhandler(400)
+def _bad_request(e):
+    return _json({"error": "bad_request", "detail": getattr(e, "description", str(e))}, 400)
+
+@app.errorhandler(404)
+def _not_found(e):
+    return _json({"error": "not_found", "detail": getattr(e, "description", str(e))}, 404)
+
+@app.errorhandler(409)
+def _conflict(e):
+    return _json({"error": "conflict", "detail": getattr(e, "description", str(e))}, 409)
+
+@app.errorhandler(500)
+def _server_error(e):
+    log.exception("Unhandled 500: %s", e)
+    return _json({"error": "server_error"}, 500)
+
+# -----------------------------------------------------------------------------
+# Users
+# -----------------------------------------------------------------------------
 @api.get("/users")
 def list_users():
-    s = SessionLocal()
-    try:
+    with SessionLocal() as s:
         rows = s.execute(select(User).order_by(User.userid)).scalars().all()
         return jsonify([as_user_dict(u) for u in rows])
-    finally:
-        s.close()
 
 @api.get("/users/<int:userid>")
 def get_user(userid):
-    s = SessionLocal()
-    try:
+    with SessionLocal() as s:
         u = s.get(User, userid) or abort(404, description="User not found")
         return jsonify(as_user_dict(u))
-    finally:
-        s.close()
 
 @api.post("/users")
 def create_user():
-    data = request.get_json(force=True)
+    data = request.get_json(force=True) or {}
     name = (data.get("name") or "").strip()
-    if not name or len(name) > 16: abort(400, description="name is required and must be <= 16 chars")
-    s = SessionLocal()
-    try:
+    if not name or len(name) > 16:
+        abort(400, description="name is required and must be <= 16 chars")
+    with SessionLocal() as s:
         u = User(name=name, ecopetmood=0, carbonpoints=0)
         s.add(u); s.commit(); s.refresh(u)
-        return jsonify(as_user_dict(u)), 201
-    finally:
-        s.close()
+        return _json(as_user_dict(u), 201)
 
 @api.patch("/users/<int:userid>")
 def update_user(userid):
-    data = request.get_json(force=True)
-    s = SessionLocal()
-    try:
+    data = request.get_json(force=True) or {}
+    with SessionLocal() as s:
         u = s.get(User, userid) or abort(404, description="User not found")
         if "name" in data:
             name = (data["name"] or "").strip()
             if not name or len(name) > 16: abort(400, description="name must be non-empty and <= 16 chars")
             u.name = name
         if "ecopetmood" in data:
-            mood = int(data["ecopetmood"]); 
+            mood = int(data["ecopetmood"])
             if mood < 0 or mood > 100: abort(400, description="ecopetmood must be 0..100")
             u.ecopetmood = mood
         if "carbonpoints" in data:
-            pts = int(data["carbonpoints"]); 
+            pts = int(data["carbonpoints"])
             if pts < 0: abort(400, description="carbonpoints must be >= 0")
             u.carbonpoints = pts
         if "weekly_emissions_saved" in data:
-            wes = float(data["weekly_emissions_saved"]); 
+            wes = float(data["weekly_emissions_saved"])
             if wes > 0: abort(400, description="weekly_emissions_saved must be <= 0")
             _set_wes(u, wes)
         if "weekly_emissions_produced" in data:
-            wep = float(data["weekly_emissions_produced"]); 
+            wep = float(data["weekly_emissions_produced"])
             if wep < 0: abort(400, description="weekly_emissions_produced must be >= 0")
             _set_wep(u, wep)
-        s.commit(); 
+        s.commit()
         return jsonify(as_user_dict(u))
-    finally:
-        s.close()
 
-# ------------ UserQuests ------------
+# -----------------------------------------------------------------------------
+# UserQuests
+# -----------------------------------------------------------------------------
 @api.get("/users/<int:userid>/userquests")
 def list_userquests(userid):
     status = (request.args.get("status") or "active").lower().strip()
-    s = SessionLocal()
-    try:
+    with SessionLocal() as s:
         s.get(User, userid) or abort(404, description="User not found")
         stmt = (
             select(UserQuest, Quest)
@@ -184,33 +300,27 @@ def list_userquests(userid):
             .order_by(UserQuest.userquestid.desc())
         )
         if status == "active":
-            stmt = stmt.where(UserQuest.isactive == True, UserQuest.iscompleted == False)
+            stmt = stmt.where(UserQuest.isactive == True, UserQuest.iscompleted == False)  # noqa: E712
         elif status == "completed":
-            stmt = stmt.where(UserQuest.iscompleted == True)
+            stmt = stmt.where(UserQuest.iscompleted == True)  # noqa: E712
         elif status != "all":
             abort(400, description="status must be active|completed|all")
         rows = s.execute(stmt).all()
         return jsonify([{**as_userquest_dict(uq), "quest": as_quest_dict(q)} for uq, q in rows])
-    finally:
-        s.close()
 
 @api.get("/userquests/<int:userquestid>")
 def get_userquest(userquestid):
-    s = SessionLocal()
-    try:
+    with SessionLocal() as s:
         uq = s.get(UserQuest, userquestid) or abort(404, description="UserQuest not found")
         q = s.get(Quest, uq.questid)
         return jsonify({**as_userquest_dict(uq), "quest": as_quest_dict(q) if q else None})
-    finally:
-        s.close()
 
 @api.post("/users/<int:userid>/quests")
 def assign_quests(userid):
-    data = request.get_json(force=True)
+    data = request.get_json(force=True) or {}
     questids = list({int(q) for q in data.get("questids", [])})
     if not questids: abort(400, description="questids required")
-    s = SessionLocal()
-    try:
+    with SessionLocal() as s:
         s.get(User, userid) or abort(404, description="User not found")
         existing_qids = set(q.questid for q in s.execute(
             select(Quest).where(Quest.questid.in_(questids))
@@ -222,17 +332,14 @@ def assign_quests(userid):
             uq = UserQuest(userid=userid, questid=qid, isactive=True, iscompleted=False)
             s.add(uq); created.append(uq)
         s.commit()
-        return jsonify([as_userquest_dict(uq) for uq in created]), 201
-    finally:
-        s.close()
+        return _json([as_userquest_dict(uq) for uq in created], 201)
 
 @api.post("/users/<int:userid>/quests/assign_random")
 def assign_random_quests(userid):
     data = request.get_json(silent=True) or {}
     count = int(data.get("count", 3)); diffs = data.get("difficulty") or []
     if count <= 0: abort(400, description="count must be > 0")
-    s = SessionLocal()
-    try:
+    with SessionLocal() as s:
         s.get(User, userid) or abort(404, description="User not found")
         existing_qids = set(qid for (qid,) in s.execute(
             select(UserQuest.questid).where(UserQuest.userid == userid)
@@ -240,23 +347,23 @@ def assign_random_quests(userid):
         q = select(Quest).where(~Quest.questid.in_(existing_qids))
         if diffs: q = q.where(Quest.difficulty.in_(diffs))
         picks = s.execute(q.order_by(func.random()).limit(count)).scalars().all()
-        if not picks: return jsonify({"created": [], "note": "no quests available to assign"}), 200
+        if not picks:
+            return _json({"created": [], "note": "no quests available to assign"}, 200)
         created = []
         for quest in picks:
             uq = UserQuest(userid=userid, questid=quest.questid, isactive=True, iscompleted=False)
             s.add(uq); created.append(uq)
         s.commit()
-        return jsonify([as_userquest_dict(uq) for uq in created]), 201
-    finally:
-        s.close()
+        return _json([as_userquest_dict(uq) for uq in created], 201)
 
-# ------------ Complete quest ------------
+# -----------------------------------------------------------------------------
+# Complete quest
+# -----------------------------------------------------------------------------
 @api.post("/userquests/<int:userquestid>/complete")
 def complete_userquest(userquestid):
     data = request.get_json(silent=True) or {}
     when = data.get("completeddate"); mood_delta = int(data.get("mood_delta", 10))
-    s = SessionLocal()
-    try:
+    with SessionLocal() as s:
         uq = s.get(UserQuest, userquestid) or abort(404, description="UserQuest not found")
         if uq.iscompleted: abort(409, description="UserQuest already completed")
         u = s.get(User, uq.userid); q = s.get(Quest, uq.questid)
@@ -281,49 +388,47 @@ def complete_userquest(userquestid):
         s.commit()
         return jsonify({"userquest": as_userquest_dict(uq), "user": as_user_dict(u),
                         "point_kg_per_point": POINT_KG_PER_POINT})
-    finally:
-        s.close()
 
-# ------------ Events ------------
+# -----------------------------------------------------------------------------
+# Events
+# -----------------------------------------------------------------------------
 @api.get("/users/<int:userid>/events")
 def user_events(userid):
     limit = int(request.args.get("limit", 50))
-    s = SessionLocal()
-    try:
+    limit = max(1, min(limit, 200))
+    with SessionLocal() as s:
         s.get(User, userid) or abort(404, description="User not found")
         rows = s.execute(
             select(Event).where(Event.userid == userid)
             .order_by(Event.datetime.desc()).limit(limit)
         ).scalars().all()
         return jsonify([as_event_dict(e) for e in rows])
-    finally:
-        s.close()
 
-# ------------ Conversions ------------
+# -----------------------------------------------------------------------------
+# Conversions
+# -----------------------------------------------------------------------------
 @api.get("/conversions")
 def list_conversions():
-    s = SessionLocal()
-    try:
+    with SessionLocal() as s:
         rows = s.execute(
             select(EmissionConversionSaving).order_by(EmissionConversionSaving.metricid)
         ).scalars().all()
         return jsonify([{
             "metricid": r.metricid, "name": r.name, "description": r.description, "emissionsperx": r.emissionsperx
         } for r in rows])
-    finally:
-        s.close()
 
-# ------------ Dashboard ------------
+# -----------------------------------------------------------------------------
+# Dashboard
+# -----------------------------------------------------------------------------
 @api.get("/users/<int:userid>/dashboard")
 def user_dashboard(userid):
-    s = SessionLocal()
-    try:
+    with SessionLocal() as s:
         u = s.get(User, userid) or abort(404, description="User not found")
         active_count = s.execute(select(func.count()).select_from(UserQuest).where(
-            UserQuest.userid == userid, UserQuest.isactive == True, UserQuest.iscompleted == False
+            UserQuest.userid == userid, UserQuest.isactive == True, UserQuest.iscompleted == False  # noqa: E712
         )).scalar_one()
         completed_count = s.execute(select(func.count()).select_from(UserQuest).where(
-            UserQuest.userid == userid, UserQuest.iscompleted == True
+            UserQuest.userid == userid, UserQuest.iscompleted == True  # noqa: E712
         )).scalar_one()
         total_emissions = s.execute(select(func.coalesce(func.sum(Event.emissions), 0.0)).where(
             Event.userid == userid, Event.type == "Quest"
@@ -334,18 +439,17 @@ def user_dashboard(userid):
             "completed_quests": int(completed_count),
             "total_emissions_saved": float(total_emissions),
         })
-    finally:
-        s.close()
 
-# ------------ Monthly Emissions ------------
+# -----------------------------------------------------------------------------
+# Monthly Emissions
+# -----------------------------------------------------------------------------
 @api.get("/users/<int:userid>/emissions/monthly")
 def user_monthly_emissions(userid):
     now = datetime.utcnow()
     year = int(request.args.get("year", now.year))
     month = int(request.args.get("month", now.month))
     if month < 1 or month > 12: abort(400, description="month must be 1..12")
-    s = SessionLocal()
-    try:
+    with SessionLocal() as s:
         user = s.get(User, userid) or abort(404, description="User not found")
         start, end = _month_bounds(year, month)
         total_sum = s.execute(select(func.coalesce(func.sum(Event.emissions), 0.0))
@@ -379,10 +483,10 @@ def user_monthly_emissions(userid):
             "weekly": weekly,
             "breakdown_by_type": breakdown,
         })
-    finally:
-        s.close()
 
-# ------------ Receipt Parsing ------------
+# -----------------------------------------------------------------------------
+# Receipt Parsing (base64)
+# -----------------------------------------------------------------------------
 def _normalize_b64(s: str) -> bytes:
     s = re.sub(r'^data:image/[^;]+;base64,', '', s, flags=re.I)
     s = s.replace('-', '+').replace('_', '/')
@@ -392,29 +496,52 @@ def _normalize_b64(s: str) -> bytes:
 
 @api.post("/receipt-parser")
 def update_receipt():
-    data = request.get_json()
-    if not data or "image_base64" not in data:
-        return jsonify({"error": "No image_base64 field"}), 400
+    data = request.get_json(silent=True) or {}
+    b64s = data.get("image_base64")
+    if not b64s:
+        return _json({"error": "No image_base64 field"}, 400)
     try:
+        # Size guard (prevents OOM from huge images)
+        approx_bytes = int(len(b64s) * 0.75)  # rough base64->bytes estimate
+        if approx_bytes > MAX_IMAGE_BYTES:
+            return _json({"error": f"image too large; limit {MAX_IMAGE_BYTES} bytes"}, 413)
+
         _lazy_imports()
-        img_bytes = _normalize_b64(data["image_base64"])
-        with Image.open(BytesIO(img_bytes)) as im: im.verify()
+        if _receipt_mod is None:
+            return _json({"error": "parser unavailable"}, 503)
+
+        img_bytes = _normalize_b64(b64s)
+        with Image.open(BytesIO(img_bytes)) as im:
+            im.verify()
+
         items_parsed = _receipt_mod.extract_items_from_bytes(
             img_bytes,
-            key_path=r"backend/receipt_update/savvy-girder-472600-s1-07e7b3e23118.json",
+            key_path=os.environ.get(
+                "GCP_SA_JSON_PATH",
+                r"backend/receipt_update/savvy-girder-472600-s1-07e7b3e23118.json",
+            ),
         )
         return jsonify({"receipt_json": items_parsed})
+    except UnidentifiedImageError:
+        return _json({"error": "invalid_image"}, 400)
     except Exception as e:
-        import traceback; traceback.print_exc()
-        return jsonify({"error": f"Parsing failed: {str(e)}"}), 500
+        log.exception("Parsing failed: %s", e)
+        return _json({"error": "parsing_failed", "detail": str(e)}, 500)
 
-# ------------ Map Receipt ------------
+# -----------------------------------------------------------------------------
+# Map Receipt
+# -----------------------------------------------------------------------------
 @api.post("/users/<int:userid>/map-receipt")
 def map_receipt_route(userid):
-    s = SessionLocal()
-    try:
-        _ensure_emissions_loaded()  # lazy & safe
-        receipt_json = request.get_json()
+    _ensure_emissions_loaded()  # lazy & safe
+    if not _emissions_ready:
+        return _json({"error": "emissions_engine_unavailable"}, 503)
+
+    receipt_json = request.get_json(silent=True)
+    if receipt_json is None:
+        return _json({"error": "invalid_json"}, 400)
+
+    with SessionLocal() as s:
         df_filtered = _emissions_mod.map_receipt_with_emissions(
             receipt_json, _items_index, _cat_index, df_emissions, df_category_emissions
         )
@@ -430,12 +557,16 @@ def map_receipt_route(userid):
         _bump_weekly(u, total_emissions)
         s.commit()
         return jsonify(df_filtered.to_dict(orient="records"))
-    finally:
-        s.close()
 
-# mount API
+# -----------------------------------------------------------------------------
+# Mount API
+# -----------------------------------------------------------------------------
 app.register_blueprint(api)
 
+# -----------------------------------------------------------------------------
+# Main (local)
+# -----------------------------------------------------------------------------
 if __name__ == "__main__":
     # Local dev: python -m backend.app
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    port = int(os.environ.get("PORT", "5000"))  # Render will set $PORT
+    app.run(host="0.0.0.0", port=port, debug=True)

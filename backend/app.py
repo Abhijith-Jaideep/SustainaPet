@@ -588,7 +588,7 @@ engine = create_engine(
 # ---------- read the csv from database----------
 df_emissions = pd.read_sql('SELECT * FROM pawprint."FoodEmissions";', engine)
 df_category_emissions = pd.read_sql(
-    'SELECT "Category", "Emissions" FROM pawprint."CategoryEmissions";',
+    'SELECT * FROM pawprint."CategoryEmissions";',
     engine
 )
 

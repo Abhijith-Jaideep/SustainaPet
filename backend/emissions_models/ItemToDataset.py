@@ -164,17 +164,20 @@ def map_item(item: str, items_index, cat_index, df_emissions, df_category_emissi
             "Item": item,
             "MatchedName": match["Name"] if match else None,
             "Emissions": match["Emissions"] if match else None,
+            "Impact": match.get("Impact") if match else None,
             "Confidence": confidence,
             "Method": method,
             "Category": None
         }
     else:
-        row = df_category_emissions.loc[df_category_emissions["Category"] == Category, "Emissions"]
-        emissions = float(row.values[0]) if not row.empty else 3.0
+        row = df_category_emissions.loc[df_category_emissions["Category"] == Category]
+        emissions = float(row["Emissions"].values[0]) if not row.empty else 3.0
+        impact = row["Impact"].values[0] if not row.empty else None
         return {
             "Item": item,
             "MatchedName": Category,
             "Emissions": emissions,
+            "Impact": impact, 
             "Confidence": confidence,
             "Method": method,
             "Category": Category
@@ -205,7 +208,7 @@ def map_receipt_with_emissions(receipt_json, items_index, cat_index, df_emission
     final["TotalEmissions"] = final["Qty"] * final["WeightKG"] * final["Emissions"]
 
     return final[["Item", "DisplayQty", "WeightKG", "MatchedName", 
-              "Emissions", "TotalEmissions", "Confidence", "Method"]]
+              "Emissions", "TotalEmissions", "Impact", "Confidence", "Method"]]
 
 # In[3]:
 
@@ -220,10 +223,7 @@ engine = create_engine(
 
 # Retrieve the two tables
 df_emissions = pd.read_sql('SELECT * FROM pawprint."FoodEmissions";', engine)
-df_category_emissions = pd.read_sql(
-    'SELECT "Category", "Emissions" FROM pawprint."CategoryEmissions";',
-    engine
-)
+df_category_emissions = pd.read_sql('SELECT * FROM pawprint."CategoryEmissions";',engine)
 
 
 receipt_json1 = {

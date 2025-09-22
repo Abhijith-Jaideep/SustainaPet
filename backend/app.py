@@ -7,6 +7,9 @@ import os
 
 from .db import SessionLocal
 from .models import User, Quest, UserQuest, Event, EmissionConversionSaving
+from flask_sqlalchemy import SQLAlchemy
+
+db = SQLAlchemy()
 
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "*"}})  # relax as needed for dev
@@ -558,6 +561,11 @@ def user_monthly_emissions(userid):
         })
     finally:
         session.close()
+
+# ---------- Photo Extraction ----------
+@api.post("/users/<int:userid>/emissions/monthly")
+def user_photo_info():
+    pass
 
 
 # Mount the blueprint

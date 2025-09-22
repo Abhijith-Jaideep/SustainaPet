@@ -390,7 +390,7 @@ def _normalize_b64(s: str) -> bytes:
     if pad: s += '=' * pad
     return _b64.b64decode(s, validate=False)
 
-@app.route("/receipt-parser", methods=["POST"])
+@api.post("/receipt-parser")
 def update_receipt():
     data = request.get_json()
     if not data or "image_base64" not in data:
@@ -409,7 +409,7 @@ def update_receipt():
         return jsonify({"error": f"Parsing failed: {str(e)}"}), 500
 
 # ------------ Map Receipt ------------
-@app.route("/<int:userid>/map-receipt", methods=["POST"])
+@api.post("/users/<int:userid>/map-receipt")
 def map_receipt_route(userid):
     s = SessionLocal()
     try:

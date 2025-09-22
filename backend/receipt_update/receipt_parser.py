@@ -237,7 +237,7 @@ def parse_items_only_from_lines(line_objs: List[Dict]) -> List[Dict]:
             continue
 
         i += 1
-
+    items = [it for it in items if (it.get("unit_price", 0) >= 0 and it.get("line_total", 0) >= 0)]
     return items
 
 # =========================

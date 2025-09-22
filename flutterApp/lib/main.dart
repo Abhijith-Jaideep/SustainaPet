@@ -137,7 +137,7 @@ class _MainNavigationState extends State<MainNavigation> {
           BottomNavigationBarItem(icon: Icon(Icons.home), label: "Home"),
           BottomNavigationBarItem(icon: Icon(Icons.dashboard), label: "Dashboard"),
           BottomNavigationBarItem(icon: Icon(Icons.task), label: "Quests"),
-          BottomNavigationBarItem(icon: Icon(Icons.receipt_long), label: "Grocery Receipt")
+          BottomNavigationBarItem(icon: Icon(Icons.receipt_long), label: "Grocery Scanner")
         ],
       ),
     );

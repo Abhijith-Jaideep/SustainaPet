@@ -5,13 +5,9 @@ import 'dart:math' as math;
 
 import '../api/base_url.dart';
 import '../api/pawprint_api.dart';
-// NOTE: removed '../model/timeframe.dart' to avoid duplicate enum conflicts
 
-enum Timeframe {
-  day,
-  week,
-  month,
-}
+// If you already have a Timeframe elsewhere, remove this.
+enum Timeframe { day, week, month }
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
@@ -34,7 +30,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       uid = raw;
     } else if (raw is String) {
       uid = int.tryParse(raw);
-      if (uid != null) await prefs.setInt('userId', uid); // migrate
+      if (uid != null) await prefs.setInt('userId', uid); // migrate to int
     }
     if (uid == null) {
       if (mounted) Navigator.of(context).pushReplacementNamed('/');
@@ -49,23 +45,70 @@ class _DashboardScreenState extends State<DashboardScreen> {
   @override
   void initState() {
     super.initState();
-    final base = pickBaseUrl();
-    api = PawprintApi(base);
+    api = PawprintApi(pickBaseUrl());
     _initializeDashboard();
   }
 
   Future<_DashData> _load(int uid) async {
+    // 1) Fetch dashboard to get the user weekly counters (as-is)
+    final dash = await api.getDashboard(uid);
+    final user = dash.user;
+
+    // 2) Fetch monthly data for chart + conversions
     final monthly = await api.getMonthlyEmissions(userid: uid);
     final conversions = await api.getConversions();
-    final events = await api.getUserEvents(uid, limit: 25); // recent events
+    final events = await api.getUserEvents(uid, limit: 25);
 
-    final totalDisplayKg = monthly.netKg.abs();
+    // ===== Read & consume "pending" receipt emissions (set by grocery scanner) =====
+    // NOTE: This only affects monthly visuals (chart/conversions), not the weekly cards.
+    final prefs = await SharedPreferences.getInstance();
+    final pending = prefs.getDouble('pending_receipt_emissions_$uid') ?? 0.0;
+    final pendingDesc = prefs.getString('pending_receipt_desc');
+    final pendingTsStr = prefs.getString('pending_receipt_ts');
+    final pendingTs = pendingTsStr != null
+        ? DateTime.tryParse(pendingTsStr) ?? DateTime.now()
+        : DateTime.now();
 
-    // Sort weeks and keep signed values
+    // Chart data (monthly weekly buckets; signed values +/-)
     final weeklySorted = [...monthly.weekly]..sort((a, b) => a.week.compareTo(b.week));
     final weeklyNet = weeklySorted.map((w) => w.kg).toList();
     final weekLabels = weeklySorted.map((w) => 'W${w.week}').toList();
 
+    // === TOP CARDS (weekly): display exactly what backend sends ===
+    final emittedWeekly = user.weeklyEmissionsProduced; // e.g., 0.0
+    final savedWeekly   = user.weeklyEmissionsSaved;    // e.g., -2.55
+
+    // Conversions use monthly net (absolute magnitude)
+    double adjustedNet = monthly.netKg;
+
+    // Apply pending ONLY to monthly visuals
+    if (pending.abs() > 1e-9) {
+      if (weeklyNet.isNotEmpty) {
+        weeklyNet[weeklyNet.length - 1] = weeklyNet.last + pending;
+      }
+      adjustedNet += pending;
+
+      events.insert(
+        0,
+        EventDto(
+          eventid: 0,
+          userid: uid,
+          userquestid: null,
+          description: pendingDesc ?? 'Grocery receipt',
+          type: 'Receipt',
+          emissions: pending,
+          datetime: pendingTs,
+        ),
+      );
+
+      await prefs.remove('pending_receipt_emissions_$uid');
+      await prefs.remove('pending_receipt_desc');
+      await prefs.remove('pending_receipt_ts');
+    }
+
+    final totalDisplayKg = adjustedNet.abs();
+
+    // ----- Build conversions (with icons per metric) -----
     final byName = {for (final c in conversions) c.name.toLowerCase(): c};
     final List<_Metric> metrics = [];
 
@@ -79,12 +122,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
         calculation: _CalcType.userOverEmissionsPerX,
         unitLabel: 'trees',
         icon: Icons.park_rounded,
-        // tutor asked for time-specific phrasing (just text)
         sentence: (v) => '≈ ${_formatNumber(v)} trees saved in a month.',
       ));
     }
 
-    const kgPerKwh = 0.7;
+    const kgPerKwh = 0.7; // example factor
     metrics.add(_Metric(
       id: 9991,
       name: 'Electricity',
@@ -140,8 +182,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
 
     return _DashData(
-      totalDisplayKg: totalDisplayKg,
-      weeklyNet: weeklyNet,
+      emittedKg: emittedWeekly,     // weekly_emissions_produced (as-is)
+      savedKg: savedWeekly,         // weekly_emissions_saved (as-is; may be negative)
+      totalDisplayKg: totalDisplayKg, // abs(monthly net) for conversions
+      weeklyNet: weeklyNet,         // monthly chart (with pending bump if any)
       weekLabels: weekLabels,
       metrics: metrics,
       events: events,
@@ -189,7 +233,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  // === Top row: Carbon Emitted + Carbon Saved ===
+                  // === Top row: Carbon Emitted + Carbon Saved (WEEKLY, as-is) ===
                   Row(
                     children: [
                       Expanded(
@@ -206,10 +250,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                 crossAxisAlignment: CrossAxisAlignment.end,
                                 children: [
                                   Text(
-                                    data.weeklyNet
-                                        .where((v) => v > 0)
-                                        .fold(0.0, (a, b) => a + b)
-                                        .toStringAsFixed(1),
+                                    data.emittedKg.toStringAsFixed(1),
                                     style: const TextStyle(
                                       fontSize: 28,
                                       fontWeight: FontWeight.w700,
@@ -249,11 +290,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                 crossAxisAlignment: CrossAxisAlignment.end,
                                 children: [
                                   Text(
-                                    data.weeklyNet
-                                        .where((v) => v < 0)
-                                        .fold(0.0, (a, b) => a + b)
-                                        .abs()
-                                        .toStringAsFixed(1),
+                                    data.savedKg.toStringAsFixed(1), // may be negative; shown as-is
                                     style: const TextStyle(
                                       fontSize: 28,
                                       fontWeight: FontWeight.w700,
@@ -283,7 +320,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
                   const SizedBox(height: 16),
 
-                  // === Compact CO₂ Conversions Grid ===
+                  // === Compact CO₂ Conversions Grid (MONTHLY) ===
                   _CardShell(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -308,7 +345,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        const _SectionHeader(icon: Icons.bar_chart_rounded, label: 'Monthly CO₂ Emissions'),
+                        const _SectionHeader(
+                          icon: Icons.bar_chart_rounded,
+                          label: 'Monthly CO₂ Emissions',
+                        ),
                         const SizedBox(height: 8),
                         MonthlyEmissionsChart(
                           values: data.weeklyNet, // +/- weekly kg
@@ -350,13 +390,19 @@ class _DashboardScreenState extends State<DashboardScreen> {
 /* ====================== View Models / UI Bits ====================== */
 
 class _DashData {
-  final double totalDisplayKg;
-  final List<double> weeklyNet; // signed values
+  // weekly, shown as-is in top cards
+  final double emittedKg;       // weekly_emissions_produced
+  final double savedKg;         // weekly_emissions_saved (may be negative)
+  // monthly visuals
+  final double totalDisplayKg;  // abs(monthly net) for conversions
+  final List<double> weeklyNet; // monthly weekly buckets (signed)
   final List<String> weekLabels;
   final List<_Metric> metrics;
   final List<EventDto> events;
 
   _DashData({
+    required this.emittedKg,
+    required this.savedKg,
     required this.totalDisplayKg,
     required this.weeklyNet,
     required this.weekLabels,
@@ -568,7 +614,7 @@ class _EventsTable extends StatelessWidget {
   }
 
   String _fmtDate(DateTime dt) {
-    return '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}';
+    return '${dt.year}-${_pad2(dt.month)}-${_pad2(dt.day)}';
   }
 }
 
@@ -580,10 +626,10 @@ class _Metric {
   final int id;
   final String name;
   final String description;
-  final double? emissionsPerX; // negative in DB for savings; use abs() in math
+  final double? emissionsPerX; // negative in DB for savings; use abs() for math
   final _CalcType calculation;
   final String unitLabel;
-  final IconData icon;
+  final IconData icon; // metric-specific icon
   final double Function(double emissionsKg, _Metric metric)? overrideCompute;
   final String Function(double value) sentence;
   final Timeframe timeframe;
@@ -614,7 +660,7 @@ class _Metric {
   }
 }
 
-/* === Compact Conversions Grid (replaces _ConversionList in UI) === */
+/* === Compact Conversions Grid with metric-specific icons === */
 class _ConversionGrid extends StatelessWidget {
   final double emissionsKg;
   final List<_Metric> metrics;
@@ -623,6 +669,24 @@ class _ConversionGrid extends StatelessWidget {
     required this.emissionsKg,
     required this.metrics,
   });
+
+  Color _iconBgFor(IconData icon) {
+    if (icon == Icons.park_rounded) return const Color(0xFFE8F5E9);
+    if (icon == Icons.bolt_rounded) return const Color(0xFFFFF3C4);
+    if (icon == Icons.lightbulb_outline_rounded) return const Color(0xFFFFF8E1);
+    if (icon == Icons.smartphone_rounded) return const Color(0xFFE3F2FD);
+    if (icon == Icons.directions_car_rounded) return const Color(0xFFEDE7F6);
+    return const Color(0xFFF1F3F4);
+  }
+
+  Color _iconFgFor(IconData icon) {
+    if (icon == Icons.park_rounded) return const Color(0xFF2E7D32);
+    if (icon == Icons.bolt_rounded) return const Color(0xFFFFC107);
+    if (icon == Icons.lightbulb_outline_rounded) return const Color(0xFFF57F17);
+    if (icon == Icons.smartphone_rounded) return const Color(0xFF1976D2);
+    if (icon == Icons.directions_car_rounded) return const Color(0xFF5E35B1);
+    return const Color(0xFF546E7A);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -638,13 +702,15 @@ class _ConversionGrid extends StatelessWidget {
         crossAxisCount: cols,
         mainAxisSpacing: 10,
         crossAxisSpacing: 10,
-        // ↓ Give each tile a bit more height (fixes "BOTTOM OVERFLOWED" by ~6-8px)
         childAspectRatio: 2.0,
       ),
       itemBuilder: (context, i) {
         final m = metrics[i];
         final val = m.compute(emissionsKg);
         final sentence = (val == null) ? '—' : m.sentence(val);
+
+        final bg = _iconBgFor(m.icon);
+        final fg = _iconFgFor(m.icon);
 
         return Material(
           color: Colors.white,
@@ -661,11 +727,11 @@ class _ConversionGrid extends StatelessWidget {
                 Container(
                   width: 32,
                   height: 32,
-                  decoration: const BoxDecoration(
-                    color: Color(0xFFFFF3C4),
+                  decoration: BoxDecoration(
+                    color: bg,
                     shape: BoxShape.circle,
                   ),
-                  child: const Icon(Icons.eco_rounded, color: Color(0xFFFFC107), size: 18),
+                  child: Icon(m.icon, color: fg, size: 18),
                 ),
                 const SizedBox(width: 10),
                 Expanded(
@@ -680,7 +746,7 @@ class _ConversionGrid extends StatelessWidget {
                         overflow: TextOverflow.ellipsis,
                         style: const TextStyle(
                           fontWeight: FontWeight.w700,
-                          fontSize: 13, // a hair smaller helps on tight tiles
+                          fontSize: 13,
                         ),
                       ),
                       const SizedBox(height: 2),
@@ -692,7 +758,7 @@ class _ConversionGrid extends StatelessWidget {
                         style: const TextStyle(
                           fontSize: 11.5,
                           color: Colors.black87,
-                          height: 1.15, // slightly tighter leading
+                          height: 1.15,
                         ),
                       ),
                     ],
@@ -706,7 +772,6 @@ class _ConversionGrid extends StatelessWidget {
     );
   }
 }
-
 
 /* ====================== Proper Monthly Emissions Chart ====================== */
 
@@ -815,6 +880,7 @@ class _MonthlyBarPainter extends CustomPainter {
       maxLines: 1,
     );
 
+    // Y grid + labels (+max ... -max)
     for (int i = 0; i <= yTicks; i++) {
       final t = i / yTicks; // 0..1
       final yValue = maxAbsY - (2 * maxAbsY) * t; // +max..-max
@@ -827,6 +893,7 @@ class _MonthlyBarPainter extends CustomPainter {
       tpLbl.paint(canvas, Offset(_leftPad - 6 - tpLbl.width, y - tpLbl.height / 2));
     }
 
+    // Y-axis title
     final yTitle = TextPainter(
       text: TextSpan(
         text: 'CO₂e (kg)',
@@ -840,6 +907,7 @@ class _MonthlyBarPainter extends CustomPainter {
     yTitle.paint(canvas, Offset.zero);
     canvas.restore();
 
+    // Axes
     canvas.drawLine(chartRect.topLeft, chartRect.bottomLeft, paintAxis);
     canvas.drawLine(chartRect.bottomLeft, chartRect.bottomRight, paintAxis);
 
@@ -848,6 +916,7 @@ class _MonthlyBarPainter extends CustomPainter {
       return chartRect.top + t * chartRect.height;
     }
 
+    // Zero line
     final zeroY = yFor(0);
     if (zeroY >= chartRect.top && zeroY <= chartRect.bottom) {
       final zeroPaint = Paint()
@@ -856,6 +925,7 @@ class _MonthlyBarPainter extends CustomPainter {
       canvas.drawLine(Offset(chartRect.left, zeroY), Offset(chartRect.right, zeroY), zeroPaint);
     }
 
+    // Bars
     if (values.isEmpty) return;
     final count = values.length;
     final barSlot = chartRect.width / count;
@@ -912,6 +982,7 @@ String _formatNumber(double v) {
 }
 
 String _pad2(int n) => n < 10 ? '0$n' : '$n';
+String _fmtDate(DateTime dt) => '${dt.year}-${_pad2(dt.month)}-${_pad2(dt.day)}';
 String _fmtDateTime(DateTime dt) {
   final d = dt.toLocal();
   final y = d.year;
@@ -921,212 +992,3 @@ String _fmtDateTime(DateTime dt) {
   final mm = _pad2(d.minute);
   return '$y-$m-$day $hh:$mm';
 }
-
-
-// // lib/screens/dashboard_screen.dart
-// import 'package:flutter/material.dart';
-// import 'package:fl_chart/fl_chart.dart';
-//
-// class EventDto {
-//   final String description;
-//   final double emissions;
-//   final DateTime datetime;
-//
-//   EventDto({
-//     required this.description,
-//     required this.emissions,
-//     required this.datetime,
-//   });
-// }
-//
-// class DashboardScreen extends StatefulWidget {
-//   const DashboardScreen({super.key});
-//
-//   @override
-//   _DashboardScreenState createState() => _DashboardScreenState();
-// }
-//
-// class _DashboardScreenState extends State<DashboardScreen> {
-//   late Future<_DashData> _future;
-//
-//   @override
-//   void initState() {
-//     super.initState();
-//     _future = _loadData();
-//   }
-//
-//   Future<_DashData> _loadData() async {
-//     await Future.delayed(const Duration(seconds: 1));
-//     // 模拟每周净排放数据
-//     final weeklyNet = [2.0, -1.0, 3.0, -2.5, 1.0, -0.5];
-//     return _DashData(
-//       totalDisplayKg: weeklyNet.fold(0, (a, b) => a + b),
-//       weeklyNet: weeklyNet,
-//       weekLabels: ["W1","W2","W3","W4","W5","W6"],
-//       metrics: [
-//         _Metric(name: "Trees", value: 10),
-//         _Metric(name: "kWh", value: 200),
-//       ],
-//       events: [
-//         EventDto(description: "Bike ride", emissions: -1.0, datetime: DateTime.now().subtract(const Duration(days: 1))),
-//         EventDto(description: "Car commute", emissions: 2.5, datetime: DateTime.now().subtract(const Duration(days: 2))),
-//       ],
-//     );
-//   }
-//
-//   @override
-//   Widget build(BuildContext context) {
-//     return Scaffold(
-//       appBar: AppBar(title: const Text("Dashboard")),
-//       body: FutureBuilder<_DashData>(
-//         future: _future,
-//         builder: (context, snapshot) {
-//           if (snapshot.connectionState == ConnectionState.waiting) {
-//             return const Center(child: CircularProgressIndicator());
-//           } else if (snapshot.hasError) {
-//             return Center(child: Text("Error: ${snapshot.error}"));
-//           } else if (!snapshot.hasData) {
-//             return const Center(child: Text("No data"));
-//           }
-//
-//           final data = snapshot.data!;
-//
-//           return SingleChildScrollView(
-//             padding: const EdgeInsets.all(16),
-//             child: Column(
-//               crossAxisAlignment: CrossAxisAlignment.start,
-//               children: [
-//                 // === Carbon Metrics 分成两类 ===
-//                 Text('Carbon Emitted: ${data.emitted.toStringAsFixed(2)} kg', style: const TextStyle(fontSize: 14)),
-//                 Text('Carbon Saved: ${data.saved.toStringAsFixed(2)} kg', style: const TextStyle(fontSize: 14)),
-//                 const SizedBox(height: 16),
-//
-//                 // === Metrics 显示 Monthly + 名称 ===
-//                 Column(
-//                   children: data.metrics.map((m) => _MetricWidget(metric: m)).toList(),
-//                 ),
-//                 const SizedBox(height: 16),
-//
-//                 // === Monthly Emissions Chart ===
-//                 MonthlyEmissionsChart(values: data.weeklyNet),
-//
-//                 const SizedBox(height: 16),
-//                 // === Recent Events (只显示日期) ===
-//                 const Text("Recent Activities", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-//                 const SizedBox(height: 8),
-//                 Column(
-//                   children: data.events.map((e) {
-//                     final dateStr = "${e.datetime.year}-${_pad2(e.datetime.month)}-${_pad2(e.datetime.day)}";
-//                     return ListTile(
-//                       title: Text(e.description),
-//                       trailing: Text(dateStr),
-//                       leading: Icon(
-//                         e.emissions >= 0 ? Icons.north_rounded : Icons.south_rounded,
-//                         color: e.emissions >= 0 ? Colors.red : Colors.green,
-//                       ),
-//                     );
-//                   }).toList(),
-//                 ),
-//               ],
-//             ),
-//           );
-//         },
-//       ),
-//     );
-//   }
-// }
-//
-// class _DashData {
-//   final double totalDisplayKg;
-//   final List<double> weeklyNet;
-//   final List<String> weekLabels;
-//   final List<_Metric> metrics;
-//   final List<EventDto> events;
-//
-//   _DashData({
-//     required this.totalDisplayKg,
-//     required this.weeklyNet,
-//     required this.weekLabels,
-//     required this.metrics,
-//     required this.events,
-//   });
-//
-//   double get emitted => weeklyNet.where((v) => v > 0).fold(0.0, (a, b) => a + b);
-//   double get saved => weeklyNet.where((v) => v < 0).fold(0.0, (a, b) => a + b).abs();
-// }
-//
-// class _Metric {
-//   final String name;
-//   final double value;
-//   _Metric({required this.name, required this.value});
-// }
-//
-// class _MetricWidget extends StatelessWidget {
-//   final _Metric metric;
-//   const _MetricWidget({required this.metric});
-//
-//   @override
-//   Widget build(BuildContext context) {
-//     return Card(
-//       margin: const EdgeInsets.symmetric(vertical: 6),
-//       child: Padding(
-//         padding: const EdgeInsets.all(12),
-//         child: Column(
-//           children: [
-//             Text('${metric.name} (Monthly)', style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 14)),
-//             const SizedBox(height: 6),
-//             Text(metric.value.toString(), style: const TextStyle(fontSize: 20)),
-//           ],
-//         ),
-//       ),
-//     );
-//   }
-// }
-//
-// class MonthlyEmissionsChart extends StatelessWidget {
-//   final List<double> values;
-//   const MonthlyEmissionsChart({super.key, required this.values});
-//
-//   @override
-//   Widget build(BuildContext context) {
-//     return SizedBox(
-//       height: 250,
-//       child: BarChart(
-//         BarChartData(
-//           alignment: BarChartAlignment.spaceAround,
-//           maxY: values.isEmpty ? 10 : values.reduce((a,b)=>a>b?a:b) + 5,
-//           barGroups: List.generate(values.length, (i) {
-//             return BarChartGroupData(
-//               x: i,
-//               barRods: [
-//                 BarChartRodData(toY: values[i], color: values[i]>=0?Colors.red:Colors.green),
-//               ],
-//             );
-//           }),
-//           titlesData: FlTitlesData(
-//             bottomTitles: AxisTitles(
-//               sideTitles: SideTitles(
-//                 showTitles: true,
-//                 getTitlesWidget: (value, _) => Text('M${value.toInt() + 1}'),
-//               ),
-//             ),
-//             leftTitles: AxisTitles(
-//               sideTitles: SideTitles(showTitles: true, reservedSize: 28),
-//             ),
-//           ),
-//         ),
-//       ),
-//     );
-//   }
-// }
-//
-// // Helper
-// String _pad2(int n) => n < 10 ? '0$n' : '$n';
-//
-//
-//
-//
-// /* ====================== 下面是原来的 UI 组件和帮助函数，保持不变 ====================== */
-//
-// // 省略重复的 _DashData、_CardShell、_SectionHeader、_EventsTable、_Metric、_ConversionList、MonthlyEmissionsChart、_MonthlyBarPainter、_formatNumber、_fmtDate 等代码
-// // 可直接复用你原来的实现

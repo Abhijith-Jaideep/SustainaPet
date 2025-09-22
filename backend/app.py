@@ -1,44 +1,90 @@
 # backend/app.py
-import base64
+import base64 as _b64
+import os
+import re
+from datetime import datetime
+from io import BytesIO
+
+import pandas as pd
+from PIL import Image
 from flask import Flask, Blueprint, jsonify, request, abort
 from flask_cors import CORS
-from datetime import datetime
-import requests
-from sqlalchemy import select, func, cast, Integer,create_engine
-import os
-import pandas as pd
-from backend.emissions_models.ItemToDataset import map_receipt_with_emissions, items_index, cat_index
-from backend.receipt_update.receipt_parser import parse_items_only_from_lines
-
-from backend.emissions_models.ItemToDataset import build_category_index, build_index_from_emissions, map_receipt_with_emissions
+from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy import select, func, cast, Integer
 
 from .db import SessionLocal
 from .models import User, Quest, UserQuest, Event, EmissionConversionSaving, GroceryReceipt
-from flask_sqlalchemy import SQLAlchemy
-from backend.emissions_models.item_info import map_receipt 
+
+# If you import these twice elsewhere, no harm—kept here for clarity
+from backend.emissions_models.ItemToDataset import (
+    map_receipt_with_emissions,
+    items_index,
+    cat_index,
+)
+from backend.emissions_models.ItemToDataset import (
+    build_category_index,
+    build_index_from_emissions,
+    map_receipt_with_emissions,  # re-import ok
+)
+from backend.emissions_models.item_info import map_receipt  # noqa: F401 (unused but kept)
 from backend.receipt_update.receipt_parser import extract_items_from_bytes
-import base64, re
-from io import BytesIO
-from PIL import Image
+
 
 db = SQLAlchemy()
 
 app = Flask(__name__)
-CORS(app, resources={r"/api/*": {"origins": "*"}})  # relax as needed for dev
+CORS(app, resources={r"/api/*": {"origins": "*"}})
 api = Blueprint("api", __name__, url_prefix="/api")
 
-with SessionLocal() as session:
-    # Use the existing session connection for pandas
-    conn = session.connection()
 
-    df_emissions = pd.read_sql('SELECT * FROM pawprint."FoodEmissions";', conn)
-    df_category_emissions = pd.read_sql('SELECT * FROM pawprint."CategoryEmissions";', conn)
+# ---------- Preload emissions reference tables ----------
+with SessionLocal() as _session:
+    _conn = _session.connection()
+    df_emissions = pd.read_sql('SELECT * FROM pawprint."FoodEmissions";', _conn)
+    df_category_emissions = pd.read_sql('SELECT * FROM pawprint."CategoryEmissions";', _conn)
 
 
 # ---- configuration ----
-# If a quest has NO explicit emissions value, we convert points -> CO2e saved:
-# event(type="Points", emissions = -(POINT_KG_PER_POINT * reward))
+# If a quest has NO explicit emissions value, convert points → CO₂ saved
 POINT_KG_PER_POINT = float(os.environ.get("POINT_KG_PER_POINT", "0.05"))  # kg per point
+
+
+# ---------- Weekly counters: name-compat shims (works with Option B) ----------
+# Your DB might expose columns as "weeklyemissionssaved"/"weeklyemissionsproduced" (lowercase)
+# while your Python code/JSON uses "weekly_emissions_saved"/"weekly_emissions_produced".
+# These helpers read/write whatever is available on the mapped User model.
+
+WES_ATTR = (
+    "weekly_emissions_saved"
+    if hasattr(User, "weekly_emissions_saved")
+    else ("weeklyemissionssaved" if hasattr(User, "weeklyemissionssaved") else None)
+)
+WEP_ATTR = (
+    "weekly_emissions_produced"
+    if hasattr(User, "weekly_emissions_produced")
+    else ("weeklyemissionsproduced" if hasattr(User, "weeklyemissionsproduced") else None)
+)
+
+def _get_wes(u: User) -> float:
+    return float(getattr(u, WES_ATTR, 0.0)) if WES_ATTR else 0.0
+
+def _get_wep(u: User) -> float:
+    return float(getattr(u, WEP_ATTR, 0.0)) if WEP_ATTR else 0.0
+
+def _set_wes(u: User, val: float) -> None:
+    if WES_ATTR:
+        setattr(u, WES_ATTR, float(val))
+
+def _set_wep(u: User, val: float) -> None:
+    if WEP_ATTR:
+        setattr(u, WEP_ATTR, float(val))
+
+def _bump_weekly(u: User, delta: float) -> None:
+    """delta >= 0 -> produced; delta < 0 -> saved"""
+    if delta >= 0:
+        _set_wep(u, _get_wep(u) + delta)
+    else:
+        _set_wes(u, _get_wes(u) + delta)
 
 
 # ---------- helpers ----------
@@ -48,6 +94,8 @@ def as_user_dict(u: User):
         "name": u.name,
         "ecopetmood": u.ecopetmood,
         "carbonpoints": u.carbonpoints,
+        "weekly_emissions_saved": _get_wes(u),
+        "weekly_emissions_produced": _get_wep(u),
     }
 
 def as_quest_dict(q: Quest):
@@ -91,7 +139,7 @@ def as_groceryreceipt_dict(gr: GroceryReceipt):
     }
 
 def _month_bounds(year: int, month: int):
-    """Return [start, end) datetimes for a calendar month."""
+    """Return [start, end) datetimes for a calendar month (naive UTC)."""
     start = datetime(year, month, 1)
     if month == 12:
         end = datetime(year + 1, 1, 1)
@@ -136,6 +184,7 @@ def create_user():
 
     session = SessionLocal()
     try:
+        # DB defaults populate weekly counters if present
         u = User(name=name, ecopetmood=0, carbonpoints=0)
         session.add(u)
         session.commit()
@@ -171,11 +220,26 @@ def update_user(userid):
                 abort(400, description="carbonpoints must be >= 0")
             u.carbonpoints = pts
 
+        # Weekly counters (accept snake_case JSON)
+        if "weekly_emissions_saved" in data:
+            wes = float(data["weekly_emissions_saved"])
+            if wes > 0:
+                abort(400, description="weekly_emissions_saved must be <= 0")
+            _set_wes(u, wes)
+
+        if "weekly_emissions_produced" in data:
+            wep = float(data["weekly_emissions_produced"])
+            if wep < 0:
+                abort(400, description="weekly_emissions_produced must be >= 0")
+            _set_wep(u, wep)
+
         session.commit()
         return jsonify(as_user_dict(u))
     finally:
         session.close()
 
+
+# ---------- UserQuests ----------
 @api.get("/users/<int:userid>/userquests")
 def list_userquests(userid):
     """
@@ -210,32 +274,26 @@ def list_userquests(userid):
         data = []
         for uq, q in rows:
             data.append({
-                "userquestid": uq.userquestid,
-                "userid": uq.userid,
-                "questid": uq.questid,
-                "isactive": bool(uq.isactive),
-                "iscompleted": bool(uq.iscompleted),
-                "completeddate": uq.completeddate.isoformat() if uq.completeddate else None,
-                "quest": as_quest_dict(q),  # includes description/difficulty/reward/emissions
+                **as_userquest_dict(uq),
+                "quest": as_quest_dict(q),
             })
         return jsonify(data)
     finally:
         session.close()
 
-
-# ---------- Quests ----------
-@api.get("/quests")
-def list_quests():
-    difficulty = request.args.get("difficulty")  # Easy/Medium/Hard
-    limit = int(request.args.get("limit", 50))
+# Single UserQuest (handy for Flutter getUserQuest)
+@api.get("/userquests/<int:userquestid>")
+def get_userquest(userquestid):
     session = SessionLocal()
     try:
-        stmt = select(Quest)
-        if difficulty:
-            stmt = stmt.where(Quest.difficulty == difficulty)
-        stmt = stmt.order_by(Quest.questid).limit(limit)
-        rows = session.execute(stmt).scalars().all()
-        return jsonify([as_quest_dict(q) for q in rows])
+        uq = session.get(UserQuest, userquestid)
+        if not uq:
+            abort(404, description="UserQuest not found")
+        q = session.get(Quest, uq.questid)
+        return jsonify({
+            **as_userquest_dict(uq),
+            "quest": as_quest_dict(q) if q else None,
+        })
     finally:
         session.close()
 
@@ -276,22 +334,16 @@ def assign_quests(userid):
     finally:
         session.close()
 
-# Assign random quests (NEW)
+# Assign random quests
 @api.post("/users/<int:userid>/quests/assign_random")
 def assign_random_quests(userid):
     """
     Body (JSON):
-      {
-        "count": 3,                      # optional, default 3
-        "difficulty": ["Easy","Medium"]  # optional, filter set
-      }
-
-    Picks random quests the user doesn't already have (any status)
-    and creates UserQuest rows (isactive=true, iscompleted=false).
+      { "count": 3, "difficulty": ["Easy","Medium"] }
     """
     data = request.get_json(silent=True) or {}
     count = int(data.get("count", 3))
-    diffs = data.get("difficulty") or []  # list or empty
+    diffs = data.get("difficulty") or []
 
     if count <= 0:
         abort(400, description="count must be > 0")
@@ -301,19 +353,16 @@ def assign_random_quests(userid):
         if not session.get(User, userid):
             abort(404, description="User not found")
 
-        # Quest IDs the user already has (active or completed)
+        # Quest IDs the user already has
         existing_qids = set(
             qid for (qid,) in session.execute(
                 select(UserQuest.questid).where(UserQuest.userid == userid)
             ).all()
         )
 
-        # Base query: quests not already in user's set
         q = select(Quest).where(~Quest.questid.in_(existing_qids))
         if diffs:
             q = q.where(Quest.difficulty.in_(diffs))
-
-        # Random order (func.random for SQLite/Postgres; for MySQL use func.rand())
         q = q.order_by(func.random()).limit(count)
 
         picks = session.execute(q).scalars().all()
@@ -337,18 +386,18 @@ def assign_random_quests(userid):
         session.close()
 
 
-# ---------- Complete a userquest (creates event, updates points/mood) ----------
+# ---------- Complete a userquest (creates event, updates points/mood/counters) ----------
 @api.post("/userquests/<int:userquestid>/complete")
 def complete_userquest(userquestid):
     """
-    Body (optional): {"completeddate": "2025-09-01T10:00:00", "mood_delta": 5}
+    Body (optional): {"completeddate": "2025-09-01T10:00:00", "mood_delta": 10}
     - Sets iscompleted=true, completeddate=now() or provided
-    - Creates an Event with type='Quest' if quest.emissions provided (could be pos/neg)
+    - Creates an Event with type='Quest' if quest.emissions provided (pos/neg)
     - If quest has NO emissions, creates Event type='Points' with emissions
-      = -(POINT_KG_PER_POINT * reward)  (treated as CO₂ saved)
+      = -(POINT_KG_PER_POINT * reward)  (treated as CO₂ saved, i.e. negative)
     - Increments user's carbonpoints by quest.reward
-    - Adjusts user's ecopetmood by mood_delta (default +5), clamped to [0,100]
-    Transactional.
+    - Adjusts user's ecopetmood by mood_delta (clamped to [0,100])
+    - Updates weekly counters based on event emissions sign
     """
     data = request.get_json(silent=True) or {}
     when = data.get("completeddate")
@@ -372,9 +421,8 @@ def complete_userquest(userquestid):
         uq.iscompleted = True
         uq.completeddate = datetime.fromisoformat(when) if when else datetime.utcnow()
 
-        # Create appropriate event(s)
+        # Create event(s)
         if q.emissions is not None and float(q.emissions) != 0.0:
-            # Use explicit quest emissions
             ev = Event(
                 userid=u.userid,
                 userquestid=uq.userquestid,
@@ -384,8 +432,9 @@ def complete_userquest(userquestid):
                 datetime=uq.completeddate,
             )
             session.add(ev)
+            _bump_weekly(u, ev.emissions)
         else:
-            # Convert points -> CO2e saved
+            # Convert points -> CO2e saved (negative)
             if POINT_KG_PER_POINT > 0 and (q.reward or 0) > 0:
                 ev_points = Event(
                     userid=u.userid,
@@ -396,8 +445,9 @@ def complete_userquest(userquestid):
                     datetime=uq.completeddate,
                 )
                 session.add(ev_points)
+                _bump_weekly(u, ev_points.emissions)
 
-        # Update User
+        # Update user points + mood
         u.carbonpoints = max(0, (u.carbonpoints or 0) + (q.reward or 0))
         new_mood = (u.ecopetmood or 0) + mood_delta
         u.ecopetmood = min(100, max(0, new_mood))
@@ -460,18 +510,20 @@ def user_dashboard(userid):
         # counts
         active_count = session.execute(
             select(func.count()).select_from(UserQuest).where(
-                UserQuest.userid == userid, UserQuest.isactive == True, UserQuest.iscompleted == False
+                UserQuest.userid == userid,
+                UserQuest.isactive == True,
+                UserQuest.iscompleted == False
             )
         ).scalar_one()
 
         completed_count = session.execute(
             select(func.count()).select_from(UserQuest).where(
-                UserQuest.userid == userid, UserQuest.iscompleted == True
+                UserQuest.userid == userid,
+                UserQuest.iscompleted == True
             )
         ).scalar_one()
 
-        # total emissions saved from quest events (<=0 values) — NB: Points events
-        # are also included in monthly endpoints; this keeps dashboard as-is.
+        # sum of quest-type events (negative means "saved")
         total_emissions = session.execute(
             select(func.coalesce(func.sum(Event.emissions), 0.0)).where(
                 Event.userid == userid, Event.type == "Quest"
@@ -482,7 +534,7 @@ def user_dashboard(userid):
             "user": as_user_dict(u),
             "active_quests": int(active_count),
             "completed_quests": int(completed_count),
-            "total_emissions_saved": float(total_emissions),  # negative number means "saved"
+            "total_emissions_saved": float(total_emissions),
         })
     finally:
         session.close()
@@ -495,7 +547,6 @@ def user_monthly_emissions(userid):
     Query params:
       - year (default: current UTC year)
       - month 1..12 (default: current UTC month)
-
     Returns totals (emitted/saved/net), weekly buckets (1–5), and by-type breakdown.
     """
     now = datetime.utcnow()
@@ -512,7 +563,7 @@ def user_monthly_emissions(userid):
 
         start, end = _month_bounds(year, month)
 
-        # Totals
+        # Totals (all event types)
         total_sum = session.execute(
             select(func.coalesce(func.sum(Event.emissions), 0.0))
             .where(Event.userid == userid)
@@ -555,7 +606,7 @@ def user_monthly_emissions(userid):
         ).all()
         weekly = [{"week": int(w.week), "kg": float(w.kg)} for w in weekly_rows]
 
-        # By type
+        # By type breakdown
         type_rows = session.execute(
             select(
                 Event.type.label("type"),
@@ -582,7 +633,7 @@ def user_monthly_emissions(userid):
             "totals": {
                 "emitted_kg": float(emitted_pos),
                 "saved_kg": float(saved_mag),
-                "net_kg": float(total_sum),  # could be negative if net saving
+                "net_kg": float(total_sum),  # may be negative if net saving
             },
             "weekly": weekly,
             "breakdown_by_type": breakdown,
@@ -590,61 +641,14 @@ def user_monthly_emissions(userid):
     finally:
         session.close()
 
-# ---------- Photo Extraction ----------
+
+# ---------- Photo Extraction (placeholder to keep route shape) ----------
 @api.post("/users/<int:userid>/emissions/monthly")
 def user_photo_info():
-    pass
+    return jsonify({"ok": False, "error": "not implemented"}), 501
 
 
-@app.route("/<int:userid>/map-receipt", methods=["POST"])
-def map_receipt_route(userid):
-    session = SessionLocal()
-
-    receipt_json = request.get_json()    
-    
-    # call map_receipt_with_emissions
-    df_filtered = map_receipt_with_emissions(
-    receipt_json, 
-    items_index, 
-    cat_index, 
-    df_emissions, 
-    df_category_emissions
-    )
-
-    # Compute total emissions
-    total_emissions = float(df_filtered["TotalEmissions"].sum())
-
-
-
-    # Insert into GroceryReceipt (ORM)
-    gr = GroceryReceipt(
-        userid=userid,
-        totalemissions=total_emissions,
-        date=datetime.utcnow(),
-    )
-    session.add(gr)
-    session.flush()  # ensures receiptid is populated without commit
-
-    # Create linked Event
-    ev = Event(
-        userid=userid,
-        receiptid=gr.receiptid,  
-        description=f"Grocery receipt with {len(df_filtered)} items",
-        type="Grocery",   # must exist in event_type_enum
-        emissions=total_emissions,
-        datetime=datetime.utcnow(),
-    )
-    session.add(ev)
-
-    session.commit()
-    session.close()
-    
-    return jsonify(df_filtered.to_dict(orient="records"))
-
-
-receipt_json = None
-GOOGLE_KEY_PATH = r"backend\receipt_update\savvy-girder-472600-s1-07e7b3e23118.json"
-
+# ---------- Receipt Parsing ----------
 def _normalize_b64(s: str) -> bytes:
     # Strip data URL prefix if present
     s = re.sub(r'^data:image/[^;]+;base64,', '', s, flags=re.I)
@@ -654,7 +658,7 @@ def _normalize_b64(s: str) -> bytes:
     pad = (-len(s)) % 4
     if pad:
         s += '=' * pad
-    return base64.b64decode(s, validate=False)
+    return _b64.b64decode(s, validate=False)
 
 @app.route("/receipt-parser", methods=["POST"])
 def update_receipt():
@@ -669,12 +673,66 @@ def update_receipt():
         with Image.open(BytesIO(img_bytes)) as im:
             im.verify()  # raises if not a valid image
 
-        items_parsed = extract_items_from_bytes(img_bytes, key_path=GOOGLE_KEY_PATH)
+        items_parsed = extract_items_from_bytes(
+            img_bytes,
+            key_path=r"backend/receipt_update/savvy-girder-472600-s1-07e7b3e23118.json",
+        )
         return jsonify({"receipt_json": items_parsed})
 
     except Exception as e:
         import traceback; traceback.print_exc()
         return jsonify({"error": f"Parsing failed: {str(e)}"}), 500
+
+
+# ---------- Map Receipt & Create Event/Receipt ----------
+@app.route("/<int:userid>/map-receipt", methods=["POST"])
+def map_receipt_route(userid):
+    session = SessionLocal()
+    try:
+        receipt_json = request.get_json()
+
+        # Map to emissions dataframe
+        df_filtered = map_receipt_with_emissions(
+            receipt_json,
+            items_index,
+            cat_index,
+            df_emissions,
+            df_category_emissions
+        )
+
+        total_emissions = float(df_filtered["TotalEmissions"].sum())
+
+        # Insert GroceryReceipt
+        gr = GroceryReceipt(
+            userid=userid,
+            totalemissions=total_emissions,
+            date=datetime.utcnow(),
+        )
+        session.add(gr)
+        session.flush()  # ensures receiptid is populated without commit
+
+        # Create linked Event
+        ev = Event(
+            userid=userid,
+            receiptid=gr.receiptid,
+            description=f"Grocery receipt with {len(df_filtered)} items",
+            type="Grocery",
+            emissions=total_emissions,
+            datetime=datetime.utcnow(),
+        )
+        session.add(ev)
+
+        # Update weekly counters for the user
+        u = session.get(User, userid)
+        if not u:
+            abort(404, description="User not found")
+        _bump_weekly(u, total_emissions)
+
+        session.commit()
+        return jsonify(df_filtered.to_dict(orient="records"))
+    finally:
+        session.close()
+
 
 # Mount the blueprint
 app.register_blueprint(api)
@@ -682,4 +740,3 @@ app.register_blueprint(api)
 if __name__ == "__main__":
     # Run with: python -m backend.app
     app.run(host="0.0.0.0", port=5000, debug=True)
-    CORS(app)

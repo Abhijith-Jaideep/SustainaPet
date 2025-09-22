@@ -593,8 +593,7 @@ print(type(df_emissions), type(df_category_emissions))
 
 @app.route("/map-receipt", methods=["POST"])
 def map_receipt_route():
-    receipt_json = request.get_json()
-    print("Received JSON:", receipt_json)
+    receipt_json = request.get_json()    
     
     # call map_receipt_with_emissions
     df_filtered = map_receipt_with_emissions(
@@ -603,7 +602,7 @@ def map_receipt_route():
     cat_index, 
     df_emissions, 
     df_category_emissions
-)
+    )
     
     return jsonify(df_filtered.to_dict(orient="records"))
 

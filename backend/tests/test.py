@@ -118,7 +118,7 @@
 
 # backend/test.py (your deleter)
 from db import SessionLocal
-from models import User, UserQuest, Event
+from emissions_models import User, UserQuest, Event
 
 session = SessionLocal()
 

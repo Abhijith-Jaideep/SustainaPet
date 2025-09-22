@@ -596,8 +596,10 @@ def user_photo_info():
     pass
 
 
-@app.route("/map-receipt", methods=["POST"])
-def map_receipt_route():
+@app.route("/<int:userid>/map-receipt", methods=["POST"])
+def map_receipt_route(userid):
+    session = SessionLocal()
+
     receipt_json = request.get_json()    
     
     # call map_receipt_with_emissions
@@ -612,16 +614,11 @@ def map_receipt_route():
     # Compute total emissions
     total_emissions = float(df_filtered["TotalEmissions"].sum())
 
-    # Require userid in request
-    user_id = receipt_json.get("userid")
-    if not user_id:
-        return jsonify({"error": "Missing userid in request"}), 400
 
-    session = SessionLocal()
 
     # Insert into GroceryReceipt (ORM)
     gr = GroceryReceipt(
-        userid=user_id,
+        userid=userid,
         totalemissions=total_emissions,
         date=datetime.utcnow(),
     )
@@ -630,7 +627,7 @@ def map_receipt_route():
 
     # Create linked Event
     ev = Event(
-        userid=user_id,
+        userid=userid,
         receiptid=gr.receiptid,  
         description=f"Grocery receipt with {len(df_filtered)} items",
         type="Grocery",   # must exist in event_type_enum

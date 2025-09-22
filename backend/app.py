@@ -38,11 +38,20 @@ POINT_KG_PER_POINT = float(os.environ.get("POINT_KG_PER_POINT", "0.05"))
 MAX_IMAGE_BYTES = int(os.environ.get("MAX_IMAGE_BYTES", str(6 * 1024 * 1024)))  # 6MB default
 
 # ---------- Preload emissions reference tables ----------
-with SessionLocal() as _session:
-    _conn = _session.connection()
-    df_emissions = pd.read_sql('SELECT * FROM pawprint."FoodEmissions";', _conn)
-    df_category_emissions = pd.read_sql('SELECT * FROM pawprint."CategoryEmissions";', _conn)
+df_emissions = None
+df_category_emissions = None
+_df_ready = False
 
+def _ensure_emission_refs_loaded():
+    """Load the emissions DataFrames once, on first use (keeps boot lean)."""
+    global df_emissions, df_category_emissions, _df_ready
+    if _df_ready:
+        return
+    with SessionLocal() as _session:
+        conn = _session.connection()
+        df_emissions = pd.read_sql('SELECT * FROM pawprint."FoodEmissions";', conn)
+        df_category_emissions = pd.read_sql('SELECT * FROM pawprint."CategoryEmissions";', conn)
+    _df_ready = True
 # ---------- Weekly counters: name-compat shims ----------
 WES_ATTR = (
     "weekly_emissions_saved"
@@ -499,6 +508,7 @@ def map_receipt_route(userid):
     if receipt_json is None:
         return jsonify({"error": "invalid_json"}), 400
 
+    _ensure_emission_refs_loaded()
     session = SessionLocal()
     try:
         df_filtered = map_receipt_with_emissions(

@@ -8,6 +8,9 @@ import 'package:file_picker/file_picker.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+// NEW: image package for normalization
+import 'package:image/image.dart' as img;
+
 import 'package:carbon_pawprint/api/pawprint_api.dart'; // includes ReceiptMapRow
 import '../api/base_url.dart';
 
@@ -32,6 +35,39 @@ class _GroceryScannerScreenState extends State<GroceryScannerScreen> {
   void initState() {
     super.initState();
     api = PawprintApi(pickBaseUrl());
+  }
+
+  // ================= Image Normalization =================
+  // Ensures bytes are a friendly JPEG (<= ~1600px longest edge, quality ~85).
+  // Applies to BOTH camera and file-picked images so the backend sees the same format.
+  Future<Uint8List> _normalizeImageBytes(Uint8List input) async {
+    try {
+      final decoded = img.decodeImage(input);
+      if (decoded == null) return input;
+
+      // Downscale if very large (keep aspect ratio)
+      const maxDim = 1600;
+      img.Image processed = decoded;
+      if (decoded.width > maxDim || decoded.height > maxDim) {
+        processed = img.copyResize(
+          decoded,
+          width: decoded.width >= decoded.height ? maxDim : null,
+          height: decoded.height > decoded.width ? maxDim : null,
+          interpolation: img.Interpolation.cubic,
+        );
+      }
+
+      // Force 3 channels (JPEG) and encode
+      if (processed.numChannels != 3) {
+        processed = img.copyResize(processed,
+            width: processed.width, height: processed.height);
+      }
+      final jpeg = img.encodeJpg(processed, quality: 85);
+      return Uint8List.fromList(jpeg);
+    } catch (_) {
+      // If anything goes wrong, fall back to original bytes
+      return input;
+    }
   }
 
   String _prettyJson(dynamic obj) =>
@@ -169,11 +205,11 @@ class _GroceryScannerScreenState extends State<GroceryScannerScreen> {
     }
   }
 
-  // --------- Pick from files (existing flow) ----------
+  // --------- Pick from files ----------
   Future<void> _pickFromFiles() async {
     final result = await FilePicker.platform.pickFiles(
       type: FileType.custom,
-      allowedExtensions: const ['jpg', 'jpeg', 'png'],
+      allowedExtensions: const ['jpg', 'jpeg', 'png', 'heic', 'heif'],
       withData: true,
     );
     if (!mounted) return;
@@ -187,7 +223,10 @@ class _GroceryScannerScreenState extends State<GroceryScannerScreen> {
 
     final file = result.files.single;
     final name = file.name;
-    final Uint8List bytes = file.bytes ?? await File(file.path!).readAsBytes();
+    final Uint8List raw = file.bytes ?? await File(file.path!).readAsBytes();
+
+    // ✅ Normalize before confirm page
+    final Uint8List bytes = await _normalizeImageBytes(raw);
 
     await _showConfirmPage(bytes, name, fromCamera: false);
   }
@@ -209,7 +248,11 @@ class _GroceryScannerScreenState extends State<GroceryScannerScreen> {
       return;
     }
 
-    final bytes = await shot.readAsBytes();
+    final bytesRaw = await shot.readAsBytes();
+
+    // ✅ Normalize before confirm page
+    final bytes = await _normalizeImageBytes(bytesRaw);
+
     final displayName = shot.name.isNotEmpty ? shot.name : 'camera.jpg';
 
     await _showConfirmPage(bytes, displayName, fromCamera: true);
@@ -271,7 +314,26 @@ class _GroceryScannerScreenState extends State<GroceryScannerScreen> {
                       ),
                     ),
                   ),
-                  const SizedBox(height: 10), // was 12
+                  const SizedBox(height: 10),
+                  // 👉 NEW: Live camera button
+                  SizedBox(
+                    height: 48,
+                    child: ElevatedButton.icon(
+                      onPressed: _loading ? null : _takePhoto,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Theme.of(context).colorScheme.primary,
+                        foregroundColor: Colors.white,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                      icon: const Icon(Icons.photo_camera_outlined),
+                      label: const Text(
+                        'Take Photo',
+                        style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                      ),
+                    ),
+                  ),
                 ],
               ),
 

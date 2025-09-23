@@ -12,19 +12,14 @@ from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import select, func, cast, Integer
 
-from .db import SessionLocal
-from .models import User, Quest, UserQuest, Event, EmissionConversionSaving, GroceryReceipt
+from db import SessionLocal
+from models import User, Quest, UserQuest, Event, EmissionConversionSaving, GroceryReceipt
+
 
 # Eager imports from your emissions stack (kept)
-from backend.emissions_models.ItemToDataset import (
-    map_receipt_with_emissions,
-    items_index,
-    cat_index,
-    # build_index_from_emissions,  # not used here
-    # build_category_index,        # not used here
-)
-from backend.emissions_models.item_info import map_receipt  # noqa: F401
-from backend.receipt_update.receipt_parser import extract_items_from_bytes
+from emissions_models.ItemToDataset import map_receipt_with_emissions, items_index, cat_index
+from emissions_models.item_info import map_receipt
+from receipt_update.receipt_parser import extract_items_from_bytes
 
 db = SQLAlchemy()
 

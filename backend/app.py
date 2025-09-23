@@ -487,7 +487,7 @@ def update_receipt():
             im.verify()
 
         key_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS") or \
-                   r"backend/receipt_update/savvy-girder-472600-s1-07e7b3e23118.json"
+                   r"receipt_update/savvy-girder-472600-s1-07e7b3e23118.json"
 
         items_parsed = extract_items_from_bytes(img_bytes, key_path=key_path)
         return jsonify({"receipt_json": items_parsed})

@@ -145,6 +145,7 @@ class _QuestScreenState extends State<QuestScreen> {
   Future<void> _applyDailyMoodDecay() async {
     if (_userId == null) return;
     try {
+      // Special endpoint pattern used in your code for daily mood decay
       await api.completeUserQuest(-1, moodDelta: -10);
       await _refreshAll();
     } catch (e) {
@@ -159,8 +160,8 @@ class _QuestScreenState extends State<QuestScreen> {
     if (_userId == null) return;
     final uid = _userId!;
     final active = await api.getUserQuests(uid, status: 'active');
-    final done   = await api.getUserQuests(uid, status: 'completed');
-    final dash   = await api.getDashboard(uid);
+    final done = await api.getUserQuests(uid, status: 'completed');
+    final dash = await api.getDashboard(uid);
 
     if (!mounted) return;
     setState(() {
@@ -259,7 +260,7 @@ class _QuestScreenState extends State<QuestScreen> {
     );
     setState(() {
       _active = _active.where((x) => x.userquestid != uq.userquestid).toList();
-      _completed = [optimistic, ..._completed];
+      _completed = [optimistic, ...(_completed)];
     });
 
     final savedAbsLocal = uq.quest.emissions.abs();
@@ -333,7 +334,6 @@ class _QuestScreenState extends State<QuestScreen> {
     if (!mounted || fresh == null) return fresh;
 
     setState(() {
-      // Replace in place (no reordering)
       if (_active.any((x) => x.userquestid == fresh.userquestid)) {
         _active = _replaceInPlace(_active, fresh);
       }
@@ -354,10 +354,8 @@ class _QuestScreenState extends State<QuestScreen> {
       _completed = _completed.where((x) => x.userquestid != userQuestId).toList();
 
       if (latest.iscompleted) {
-        // Put completed at the top (completed list ordering can be recency-based)
         _completed = [latest, ..._completed];
       } else {
-        // If somehow still active, replace in place
         _active = _replaceInPlace(_active, latest);
       }
     });
@@ -394,7 +392,7 @@ class _QuestScreenState extends State<QuestScreen> {
           actions: [
             IconButton(
               onPressed: _assigning ? null : _assignRandom,
-              tooltip: 'Shuffle (keep 3)', // updated tooltip
+              tooltip: 'Shuffle (keep 3)',
               icon: _assigning
                   ? const SizedBox(
                 width: 20,
@@ -525,26 +523,8 @@ class _QuestCardState extends State<_QuestCard> {
   bool _busy = false;
   bool _replacing = false;
 
-  late UserQuestDto _model;
-
-  @override
-  void initState() {
-    super.initState();
-    _model = widget.uq;
-  }
-
-  @override
-  void didUpdateWidget(covariant _QuestCard oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.uq.userquestid != widget.uq.userquestid ||
-        oldWidget.uq.iscompleted != widget.uq.iscompleted ||
-        oldWidget.uq.completeddate != widget.uq.completeddate) {
-      _model = widget.uq;
-    }
-  }
-
   void _showImpactSheet(BuildContext ctx) {
-    final q = _model.quest;
+    final q = widget.uq.quest;
     final mood = widget.moodDeltaForDifficulty(q.difficulty);
     showModalBottomSheet(
       context: ctx,
@@ -586,7 +566,7 @@ class _QuestCardState extends State<_QuestCard> {
 
   @override
   Widget build(BuildContext context) {
-    final quest = _model.quest;
+    final quest = widget.uq.quest;
     final isCompleted = widget.mode == _ListMode.completed;
 
     return AnimatedContainer(
@@ -699,7 +679,7 @@ class _QuestCardState extends State<_QuestCard> {
                                 try {
                                   final upd = await widget.onReplace!.call();
                                   if (upd != null && mounted) {
-                                    setState(() => _model = upd);
+                                    // Parent list has already been updated; just notify.
                                     ScaffoldMessenger.of(context).showSnackBar(
                                       const SnackBar(content: Text('Quest replaced')),
                                     );

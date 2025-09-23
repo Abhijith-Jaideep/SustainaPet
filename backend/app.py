@@ -316,6 +316,62 @@ def assign_random_quests(userid):
         return jsonify([as_userquest_dict(uq) for uq in created]), 201
     finally:
         session.close()
+        
+@api.post("/userquests/<int:userquestid>/replace_random")
+def replace_userquest(userquestid):
+    data = request.get_json(silent=True) or {}
+    diffs = data.get("difficulty") or []  # e.g. ["Easy"] or ["Easy","Medium"]
+
+    session = SessionLocal()
+    try:
+        # Load current UQ + related user & quest
+        uq = session.get(UserQuest, userquestid)
+        if not uq:
+            abort(404, description="UserQuest not found")
+
+        user = session.get(User, uq.userid)
+        if not user:
+            abort(404, description="User not found")
+
+        current_q = session.get(Quest, uq.questid)
+        if not current_q:
+            abort(404, description="Current quest not found")
+
+        # Build a pool of candidate quests:
+        #  - not already assigned to this user (active or completed)
+        #  - optionally matching difficulty filters
+        existing_qids = set(qid for (qid,) in session.execute(
+            select(UserQuest.questid).where(UserQuest.userid == uq.userid)
+        ).all())
+
+        q = select(Quest).where(~Quest.questid.in_(existing_qids))
+        if diffs:
+            q = q.where(Quest.difficulty.in_(diffs))
+
+        # If no filter given, bias to the same difficulty as before
+        if not diffs and current_q.difficulty:
+            q = q.where(Quest.difficulty == current_q.difficulty)
+
+        # Pick one at random
+        new_q = session.execute(q.order_by(func.random()).limit(1)).scalars().first()
+        if not new_q:
+            # Nothing to replace with; keep current
+            q_dict = as_quest_dict(current_q)
+            return jsonify({**as_userquest_dict(uq), "quest": q_dict}), 200
+
+        # Replace in place
+        uq.questid = new_q.questid
+        uq.isactive = True
+        uq.iscompleted = False
+        uq.completeddate = None
+
+        session.commit()
+        session.refresh(uq)
+
+        return jsonify({**as_userquest_dict(uq), "quest": as_quest_dict(new_q)}), 200
+    finally:
+        session.close()
+
 
 # ---------- Complete a userquest ----------
 @api.post("/userquests/<int:userquestid>/complete")

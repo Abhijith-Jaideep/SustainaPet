@@ -320,11 +320,11 @@ def assign_random_quests(userid):
 @api.post("/userquests/<int:userquestid>/replace_random")
 def replace_userquest(userquestid):
     data = request.get_json(silent=True) or {}
-    diffs = data.get("difficulty") or []  # e.g. ["Easy"] or ["Easy","Medium"]
+    diffs = data.get("difficulty") or []            # e.g. ["Easy"] or ["Easy","Medium"]
+    allow_repeat = bool(data.get("allow_repeat"))   # optional explicit flag
 
     session = SessionLocal()
     try:
-        # Load current UQ + related user & quest
         uq = session.get(UserQuest, userquestid)
         if not uq:
             abort(404, description="UserQuest not found")
@@ -337,27 +337,42 @@ def replace_userquest(userquestid):
         if not current_q:
             abort(404, description="Current quest not found")
 
-        # Build a pool of candidate quests:
-        #  - not already assigned to this user (active or completed)
-        #  - optionally matching difficulty filters
+        # Pool 1: never assigned to this user, filtered by requested difficulty (if any)
         existing_qids = set(qid for (qid,) in session.execute(
             select(UserQuest.questid).where(UserQuest.userid == uq.userid)
         ).all())
 
+        def pick_one(query):
+            return session.execute(query.order_by(func.random()).limit(1)).scalars().first()
+
+        # Step 1: requested difficulties (if provided)
         q = select(Quest).where(~Quest.questid.in_(existing_qids))
         if diffs:
             q = q.where(Quest.difficulty.in_(diffs))
+        new_q = pick_one(q)
 
-        # If no filter given, bias to the same difficulty as before
-        if not diffs and current_q.difficulty:
-            q = q.where(Quest.difficulty == current_q.difficulty)
-
-        # Pick one at random
-        new_q = session.execute(q.order_by(func.random()).limit(1)).scalars().first()
+        # Step 2: fallback to same difficulty as current if none found
         if not new_q:
-            # Nothing to replace with; keep current
-            q_dict = as_quest_dict(current_q)
-            return jsonify({**as_userquest_dict(uq), "quest": q_dict}), 200
+            q2 = select(Quest).where(~Quest.questid.in_(existing_qids))
+            if current_q.difficulty:
+                q2 = q2.where(Quest.difficulty == current_q.difficulty)
+            new_q = pick_one(q2)
+
+        # Step 3: fallback to any never-assigned quest
+        if not new_q:
+            q3 = select(Quest).where(~Quest.questid.in_(existing_qids))
+            new_q = pick_one(q3)
+
+        # Step 4: as a last resort, allow repeats (but not the same quest)
+        if not new_q and (allow_repeat or True):   # default True so replace "feels" real
+            q4 = select(Quest).where(Quest.questid != current_q.questid)
+            if diffs:
+                q4 = q4.where(Quest.difficulty.in_(diffs))
+            new_q = pick_one(q4)
+
+        # If still nothing, just return current as-is (rare: only 1 quest total)
+        if not new_q:
+            return jsonify({**as_userquest_dict(uq), "quest": as_quest_dict(current_q)}), 200
 
         # Replace in place
         uq.questid = new_q.questid
@@ -365,9 +380,7 @@ def replace_userquest(userquestid):
         uq.iscompleted = False
         uq.completeddate = None
 
-        session.commit()
-        session.refresh(uq)
-
+        session.commit(); session.refresh(uq)
         return jsonify({**as_userquest_dict(uq), "quest": as_quest_dict(new_q)}), 200
     finally:
         session.close()

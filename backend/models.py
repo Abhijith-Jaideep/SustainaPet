@@ -1,10 +1,12 @@
 # backend/models.py
+import enum
 from sqlalchemy.orm import declarative_base, relationship
+from sqlalchemy.dialects.postgresql import ENUM as PGEnum
 from sqlalchemy import (
-    Column, Integer, String, Boolean, DateTime, Float, Text, ForeignKey,
-    MetaData
+    Column, Integer, PrimaryKeyConstraint, String, Boolean, DateTime, Float, Text, ForeignKey,
+    MetaData, quoted_name
 )
-from sqlalchemy.sql import quoted_name
+
 
 metadata = MetaData(schema="pawprint")
 Base = declarative_base(metadata=metadata)
@@ -67,3 +69,33 @@ class EmissionConversionSaving(Base):
     name = Column(String(64), nullable=False)
     description = Column(Text)
     emissionsperx = Column(Float, nullable=False)
+
+# FriendRequests status enum
+class RequestStatusEnum(enum.Enum):
+    Accepted = "Accepted"
+    Pending = "Pending"
+    Rejected = "Rejected"
+
+# FriendRequests table
+class FriendRequests(Base):
+    __tablename__ = "FriendRequests"
+
+    requestid = Column(Integer, primary_key=True)
+    requesterid = Column(Integer, ForeignKey("User.userid"), nullable=False)
+    receiverid = Column(Integer, ForeignKey("User.userid"), nullable=False)
+    status = Column(
+        PGEnum('Pending', 'Accepted', 'Rejected', name='friend_request_status_enum', create_type=True),
+        nullable=False,
+        server_default='Pending'
+    )
+
+# Friends table
+class Friends(Base):
+    __tablename__ = "Friends"
+
+    userid = Column(Integer, ForeignKey("User.userid"), nullable=False)
+    friendid = Column(Integer, ForeignKey("User.userid"), nullable=False)
+
+    __table_args__ = (
+        PrimaryKeyConstraint('userid', 'friendid'),  # composite primary key
+    )

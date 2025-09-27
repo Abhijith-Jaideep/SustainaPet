@@ -2,11 +2,12 @@
 from flask import Flask, Blueprint, jsonify, request, abort
 from flask_cors import CORS
 from datetime import datetime
+from pytest import Session
 from sqlalchemy import select, func, cast, Integer
 import os
 
-from .db import SessionLocal
-from .models import User, Quest, UserQuest, Event, EmissionConversionSaving
+from backend.db import SessionLocal
+from backend.models import FriendRequests, Friends, RequestStatusEnum, User, Quest, UserQuest, Event, EmissionConversionSaving
 
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "*"}})  # relax as needed for dev
@@ -559,6 +560,189 @@ def user_monthly_emissions(userid):
     finally:
         session.close()
 
+@api.get("/users/<int:userid>/search_friend")
+def search_friend(userid):
+    """
+    Input the user_id, and then the user name will appear
+    """
+    db = SessionLocal()  # creat the database session
+    try:
+        user = db.query(User).filter(User.userid == userid).first()
+        if not user:
+            return jsonify({"error": "User not found"}), 404
+        return jsonify({
+            "userid": user.userid,
+            "name": user.name
+        })
+    finally:
+        db.close()  # close session
+
+
+@api.post("/users/<int:userid>/add_friend")
+def add_friend(userid: int):
+    db: Session = SessionLocal()
+    try:
+        data = request.get_json()
+        if not data or "friend_userid" not in data:
+            return jsonify({"error": "friend_userid is required"}), 400
+
+        friend_userid = data["friend_userid"]
+
+        from_user = db.query(User).filter(User.userid == userid).first()
+        to_user = db.query(User).filter(User.userid == friend_userid).first()
+        if not from_user or not to_user:
+            return jsonify({"error": "User not found"}), 404
+
+        existing = db.query(FriendRequests).filter(
+            FriendRequests.requesterid == userid,
+            FriendRequests.receiverid == friend_userid
+        ).first()
+        if existing:
+            return jsonify({"error": "Friend request already exists"}), 400
+
+        new_request = FriendRequests(
+            requesterid=from_user.userid,
+            receiverid=friend_userid,
+            status=RequestStatusEnum.Pending.value  
+        )
+        db.add(new_request)
+        db.commit()
+
+        return jsonify({
+            "message": "Friend Request Sent",
+            "data": {
+                "from_user_id": from_user.userid,
+                "to_user_id": friend_userid,
+                "status": new_request.status  
+            }
+        })
+    finally:
+        db.close()
+
+@api.get("/users/<int:userid>/process_request")
+def get_pending_requests(userid: int):
+    db: Session = SessionLocal()
+    try:
+        requests = db.query(FriendRequests).filter(
+            FriendRequests.receiverid == userid,
+            FriendRequests.status == 'Pending'
+        ).all()
+
+        result = []
+        for req in requests:
+            from_user = db.query(User).filter(User.userid == req.requesterid).first()
+            result.append({
+                "request_id": req.requestid,
+                "from_user_id": from_user.userid,
+                "from_user_name": from_user.name
+            })
+
+        return jsonify({"pending_requests": result})
+    finally:
+        db.close()
+
+@api.post("/users/<int:userid>/process_request")
+def process_request(userid: int):
+    """
+    Input: JSON {"request_id": int, "action": "accept"/"reject"}
+    """
+    db: Session = SessionLocal()
+    try:
+        data = request.get_json()
+        if not data or "request_id" not in data or "action" not in data:
+            return jsonify({"error": "request_id and action are required"}), 400
+
+        request_id = data["request_id"]
+        action = data["action"].lower()
+
+        # query the requerst
+        friend_request = db.query(FriendRequests).filter(
+            FriendRequests.requestid == request_id,
+            FriendRequests.receiverid == userid
+        ).first()
+
+        if not friend_request:
+            return jsonify({"error": "Friend request not found"}), 404
+
+        # accept
+        if action == "accept":
+            # insert the relationship of friends, but check whether it exists
+            for u1, u2 in [(userid, friend_request.requesterid), (friend_request.requesterid, userid)]:
+                exists = db.query(Friends).filter(
+                    Friends.userid == u1, Friends.friendid == u2
+                ).first()
+                if not exists:
+                    db.add(Friends(userid=u1, friendid=u2))
+            
+            friend_request.status = "Accepted"
+
+        # reject
+        elif action == "reject":
+            friend_request.status = "Rejected"
+
+        else:
+            return jsonify({"error": "Invalid action, must be 'accept' or 'reject'"}), 400
+
+        db.commit()
+
+        return jsonify({
+            "message": f"Friend request {action}ed successfully",
+            "data": {
+                "request_id": friend_request.requestid,
+                "from_user_id": friend_request.requesterid,
+                "to_user_id": friend_request.receiverid,
+                "status": friend_request.status
+            }
+        })
+
+    finally:
+        db.close()
+
+@api.get("/users/<int:userid>/leaderboard")
+def show_leaderboard(userid: int):
+    """
+    Return a leaderboard of the user and their friends,
+    ranked by carbonpoints (contributions).
+    """
+    db: Session = SessionLocal()
+    try:
+        # 1. check whether the user is exists
+        current_user = db.query(User).filter(User.userid == userid).first()
+        if not current_user:
+            return jsonify({"error": "User not found"}), 404
+
+        # 2. obtain the list of user_id of current users
+        friend_ids = db.query(Friends.friendid).filter(Friends.userid == userid).all()
+        friend_ids = [fid for (fid,) in friend_ids]
+
+        # 3. inlcuding myself
+        user_ids = friend_ids + [userid]
+
+        # 4. query the information of all users
+        users = db.query(User).filter(User.userid.in_(user_ids)).all()
+
+        # 5. Sort by carbon points in descending order
+        leaderboard = sorted(
+            users,
+            key=lambda u: u.carbonpoints,
+            reverse=True
+        )
+
+        # 6. return JSON
+        result = [
+            {
+                "userid": u.userid,
+                "name": u.name,
+                "carbonpoints": u.carbonpoints,
+                "ecopetmood": u.ecopetmood
+            }
+            for u in leaderboard
+        ]
+
+        return jsonify({"leaderboard": result})
+
+    finally:
+        db.close()
 
 # Mount the blueprint
 app.register_blueprint(api)

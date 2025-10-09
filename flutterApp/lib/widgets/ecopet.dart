@@ -10,12 +10,12 @@ class EcoPet extends StatelessWidget {
   String _assetForMood() {
     switch (mood) {
       case PetMood.happy:
-        return 'assets/images/eco_pet/eco_pet_happy.jpg';
+        return 'assets/images/eco_pet/eco_pet_happy.png';
       case PetMood.sad:
-        return 'assets/images/eco_pet/eco_pet_sad.jpg';
+        return 'assets/images/eco_pet/eco_pet_sad.png';
       case PetMood.neutral:
       default:
-        return 'assets/images/eco_pet/eco_pet_neutral.jpg';
+        return 'assets/images/eco_pet/eco_pet_neutral.png';
     }
   }
 
@@ -33,31 +33,27 @@ class EcoPet extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      elevation: 4,
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Image.asset(
-              _assetForMood(),
-              height: 120,
-              fit: BoxFit.contain,
-            ),
-            const SizedBox(height: 12),
-            Text(
-              _messageForMood(),
-              textAlign: TextAlign.center,
-              style: Theme.of(context)
-                  .textTheme
-                  .bodyMedium
-                  ?.copyWith(fontWeight: FontWeight.w600, color: Colors.green),
-            ),
-          ],
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        // Full-size pet image (expands to parent constraints)
+        Expanded(
+          child: Image.asset(
+            _assetForMood(),
+            fit: BoxFit.contain, // scale without cropping
+            width: double.infinity,
+          ),
         ),
-      ),
+        const SizedBox(height: 12),
+        Text(
+          _messageForMood(),
+          textAlign: TextAlign.center,
+          style: Theme.of(context)
+              .textTheme
+              .bodyMedium
+              ?.copyWith(fontWeight: FontWeight.w600, color: Colors.green),
+        ),
+      ],
     );
   }
 }

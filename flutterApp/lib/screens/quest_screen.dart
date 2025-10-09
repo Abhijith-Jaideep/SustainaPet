@@ -1,6 +1,8 @@
 // lib/screens/quest_screen.dart
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'dart:async';
 
 import '../api/base_url.dart';
 import '../api/pawprint_api.dart';
@@ -23,11 +25,30 @@ class _QuestScreenState extends State<QuestScreen> {
   bool _loading = true;
   bool _assigning = false;
 
+  Timer? _weeklyResetTimer;
+  Timer? _dailyDecayStartTimer;
+  Timer? _dailyDecayRepeater;
+
+  Timer? _resetCountdownTimer;
+  String _resetCountdownText = '';
+
   @override
   void initState() {
     super.initState();
     api = PawprintApi(pickBaseUrl());
     _bootstrap();
+    _setupWeeklyReset();
+    _scheduleDailyDecayAtMidnight();
+    _startResetCountdownTicker();
+  }
+
+  @override
+  void dispose() {
+    _weeklyResetTimer?.cancel();
+    _dailyDecayStartTimer?.cancel();
+    _dailyDecayRepeater?.cancel();
+    _resetCountdownTimer?.cancel();
+    super.dispose();
   }
 
   Future<void> _bootstrap() async {
@@ -48,7 +69,7 @@ class _QuestScreenState extends State<QuestScreen> {
       if (!mounted) return;
 
       if (uid == null) {
-        Navigator.of(context).pushReplacementNamed('/');
+        Navigator.of(context).pushReplacementNamed('/login');
         return;
       }
       _userId = uid;
@@ -60,6 +81,78 @@ class _QuestScreenState extends State<QuestScreen> {
         SnackBar(content: Text('Failed to load quests: $e')),
       );
       setState(() => _loading = false);
+    }
+  }
+
+  void _setupWeeklyReset() {
+    final now = DateTime.now();
+    final todayMidnight = DateTime(now.year, now.month, now.day);
+    final weekday = todayMidnight.weekday; // 1=Mon..7=Sun
+    final raw = (8 - weekday) % 7;
+    final daysUntilNextMonday = raw == 0 ? 7 : raw;
+    final resetTime = todayMidnight.add(Duration(days: daysUntilNextMonday));
+    final duration = resetTime.difference(now);
+
+    _weeklyResetTimer?.cancel();
+    _weeklyResetTimer = Timer(duration, () async {
+      await _assignRandom();
+      _setupWeeklyReset();
+    });
+  }
+
+  DateTime _nextMondayMidnight() {
+    final now = DateTime.now();
+    final todayMidnight = DateTime(now.year, now.month, now.day);
+    final weekday = todayMidnight.weekday;
+    final raw = (8 - weekday) % 7;
+    final days = raw == 0 ? 7 : raw;
+    return todayMidnight.add(Duration(days: days));
+  }
+
+  void _startResetCountdownTicker() {
+    void tick() {
+      final tgt = _nextMondayMidnight();
+      final diff = tgt.difference(DateTime.now());
+      final d = diff.inDays;
+      final h = diff.inHours % 24;
+      final m = diff.inMinutes % 60;
+      if (mounted) {
+        setState(() => _resetCountdownText = 'Resets in ${d}d ${h}h ${m}m');
+      }
+    }
+
+    _resetCountdownTimer?.cancel();
+    _resetCountdownTimer = Timer.periodic(const Duration(minutes: 1), (_) => tick());
+    tick();
+  }
+
+  void _scheduleDailyDecayAtMidnight() {
+    _dailyDecayStartTimer?.cancel();
+    _dailyDecayRepeater?.cancel();
+
+    final now = DateTime.now();
+    final nextMidnight = DateTime(now.year, now.month, now.day).add(const Duration(days: 1));
+    final untilMidnight = nextMidnight.difference(now);
+
+    _dailyDecayStartTimer = Timer(untilMidnight, () async {
+      await _applyDailyMoodDecay();
+      _dailyDecayRepeater = Timer.periodic(const Duration(days: 1), (_) async {
+        await _applyDailyMoodDecay();
+      });
+    });
+  }
+
+  Future<void> _applyDailyMoodDecay() async {
+    if (_userId == null) return;
+    try {
+      // Special endpoint pattern used in your code for daily mood decay
+      await api.completeUserQuest(-1, moodDelta: -10);
+      await _refreshAll();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Daily mood decay failed: $e')),
+      );
     }
   }
 
@@ -79,98 +172,193 @@ class _QuestScreenState extends State<QuestScreen> {
     });
   }
 
+  // ---------- helpers to preserve order ----------
+  List<UserQuestDto> _replaceInPlace(List<UserQuestDto> list, UserQuestDto item) {
+    final idx = list.indexWhere((x) => x.userquestid == item.userquestid);
+    if (idx < 0) return list;
+    final copy = List<UserQuestDto>.from(list);
+    copy[idx] = item;
+    return copy;
+  }
+
+  // Keep exactly 3 active quests: top up if <3, replace first 3 in place if >=3.
   Future<void> _assignRandom() async {
     if (_userId == null) return;
     setState(() => _assigning = true);
     try {
-      await api.assignRandomQuests(
-        userid: _userId!,
-        count: 3,
-        difficulty: const ['Easy', 'Medium'],
-      );
-      await _refreshAll();
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Assigned 3 new quests!')),
-      );
+      final uid = _userId!;
+      final activeNow = await api.getUserQuests(uid, status: 'active');
+      const target = 3;
+
+      if (activeNow.length < target) {
+        final deficit = target - activeNow.length;
+        await api.assignRandomQuests(
+          userid: uid,
+          count: deficit,
+          difficulty: const ['Easy', 'Medium'],
+        );
+        await _refreshAll();
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Added $deficit quest${deficit == 1 ? '' : 's'} to keep it at $target')),
+        );
+      } else {
+        final firstThree = activeNow.take(target).toList();
+        final updated = <UserQuestDto>[];
+
+        for (final uq in firstThree) {
+          try {
+            final fresh = await api.replaceUserQuest(
+              uq.userquestid,
+              difficulty: [uq.quest.difficulty],
+            );
+            updated.add(fresh ?? uq);
+          } catch (_) {
+            updated.add(uq);
+          }
+        }
+
+        if (!mounted) return;
+        setState(() {
+          var working = List<UserQuestDto>.from(_active);
+          for (final item in updated) {
+            working = _replaceInPlace(working, item);
+          }
+          _active = working;
+        });
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Shuffled your quests (kept it at 3)')),
+        );
+      }
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Assign failed: $e')),
+        SnackBar(content: Text('Shuffle failed: $e')),
       );
     } finally {
       if (mounted) setState(() => _assigning = false);
     }
   }
 
+  int _moodDeltaForDifficulty(String difficulty) {
+    final d = difficulty.trim().toLowerCase();
+    if (d == 'easy') return 10;
+    if (d == 'medium' || d == 'med') return 25;
+    if (d == 'hard') return 40;
+    return 5;
+  }
+
   Future<void> _complete(UserQuestDto uq) async {
     if (uq.iscompleted) return;
 
-    try {
-      final res = await api.completeUserQuest(uq.userquestid, moodDelta: 5);
-      final event = res['event'] as Map<String, dynamic>?;
-      final user  = res['user']  as Map<String, dynamic>?;
+    final moodDelta = _moodDeltaForDifficulty(uq.quest.difficulty);
 
-      setState(() {
-        _active.removeWhere((x) => x.userquestid == uq.userquestid);
-        _completed.insert(0, uq.copyWith(
-          iscompleted: true,
-          completeddate: DateTime.now(),
-        ));
-        if (user != null && user['carbonpoints'] is num) {
-          _points = (user['carbonpoints'] as num).toInt();
-        } else {
-          _points += uq.quest.reward;
-        }
-      });
+    final optimistic = uq.copyWith(
+      iscompleted: true,
+      completeddate: DateTime.now(),
+    );
+    setState(() {
+      _active = _active.where((x) => x.userquestid != uq.userquestid).toList();
+      _completed = [optimistic, ...(_completed)];
+    });
 
-      if (!mounted) return;
-      final saved = event?['emissions'] is num
-          ? (event!['emissions'] as num).toDouble()
-          : uq.quest.emissions;
-      final savedAbs = saved.abs();
-
-      showDialog(
-        context: context,
-        builder: (_) => AlertDialog(
-          title: const Text('Quest completed 🎉'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(uq.quest.description),
-              const SizedBox(height: 12),
-              Row(
-                children: [
-                  const Icon(Icons.eco_rounded, color: Colors.green),
-                  const SizedBox(width: 8),
-                  Text('CO₂e saved: ${savedAbs.toStringAsFixed(3)} kg'),
-                ],
-              ),
-              const SizedBox(height: 8),
-              Row(
-                children: [
-                  const Icon(Icons.star, color: Colors.amber),
-                  const SizedBox(width: 8),
-                  Text('+${uq.quest.reward} points'),
-                ],
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(),
-              child: const Text('Nice!'),
+    final savedAbsLocal = uq.quest.emissions.abs();
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Quest completed 🎉'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(uq.quest.description),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                const Icon(Icons.eco_rounded, color: Colors.green),
+                const SizedBox(width: 8),
+                Text('CO₂e saved: ${savedAbsLocal.toStringAsFixed(3)} kg'),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                const Icon(Icons.mood, color: Colors.orange),
+                const SizedBox(width: 8),
+                Text('Mood +$moodDelta'),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: const [
+                Icon(Icons.check_circle, color: Colors.green),
+                SizedBox(width: 8),
+                Text('Marked as completed'),
+              ],
             ),
           ],
         ),
-      );
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Nice!'),
+          ),
+        ],
+      ),
+    );
+
+    try {
+      await api.completeUserQuest(uq.userquestid, moodDelta: moodDelta);
+      if (!mounted) return;
+      setState(() {
+        _points += uq.quest.reward;
+      });
+      await _pullOneIntoLists(uq.userquestid);
     } catch (e) {
       if (!mounted) return;
+      setState(() {
+        _completed = _completed.where((x) => x.userquestid != uq.userquestid).toList();
+        _active = [uq, ..._active];
+      });
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Completion failed: $e')),
       );
     }
+  }
+
+  // ---- Replace just one quest (called by card) ----
+  Future<UserQuestDto?> _replaceOne(UserQuestDto old) async {
+    final diffs = [old.quest.difficulty];
+    final fresh = await api.replaceUserQuest(old.userquestid, difficulty: diffs);
+    if (!mounted || fresh == null) return fresh;
+
+    setState(() {
+      if (_active.any((x) => x.userquestid == fresh.userquestid)) {
+        _active = _replaceInPlace(_active, fresh);
+      }
+      if (_completed.any((x) => x.userquestid == fresh.userquestid)) {
+        _completed = _replaceInPlace(_completed, fresh);
+      }
+    });
+    return fresh;
+  }
+
+  // Pull latest copy for a single item after completion
+  Future<void> _pullOneIntoLists(int userQuestId) async {
+    final latest = await api.getUserQuest(userQuestId);
+    if (!mounted || latest == null) return;
+
+    setState(() {
+      _active = _active.where((x) => x.userquestid != userQuestId).toList();
+      _completed = _completed.where((x) => x.userquestid != userQuestId).toList();
+
+      if (latest.iscompleted) {
+        _completed = [latest, ..._completed];
+      } else {
+        _active = _replaceInPlace(_active, latest);
+      }
+    });
   }
 
   @override
@@ -185,7 +373,16 @@ class _QuestScreenState extends State<QuestScreen> {
       length: 2,
       child: Scaffold(
         appBar: AppBar(
-          title: const Text('Quest System'),
+          title: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('Quest System'),
+              Text(
+                _resetCountdownText,
+                style: const TextStyle(fontSize: 12, color: Colors.white70),
+              ),
+            ],
+          ),
           bottom: const TabBar(
             tabs: [
               Tab(text: 'Active'),
@@ -195,20 +392,22 @@ class _QuestScreenState extends State<QuestScreen> {
           actions: [
             IconButton(
               onPressed: _assigning ? null : _assignRandom,
-              tooltip: 'Assign 3 random',
+              tooltip: 'Shuffle (keep 3)',
               icon: _assigning
                   ? const SizedBox(
-                  width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              )
                   : const Icon(Icons.shuffle_rounded),
             ),
             Padding(
               padding: const EdgeInsets.only(right: 16),
-              child: Row(
-                children: [
-                  const Icon(Icons.star, color: Colors.amber),
-                  const SizedBox(width: 4),
-                  Text('$_points pts'),
-                ],
+              child: Center(
+                child: Text(
+                  'Carbon points: $_points',
+                  style: const TextStyle(fontWeight: FontWeight.w600),
+                ),
               ),
             ),
           ],
@@ -221,10 +420,14 @@ class _QuestScreenState extends State<QuestScreen> {
                 items: _active,
                 mode: _ListMode.active,
                 onCompleteChecked: _complete,
+                onReplaceOne: _replaceOne,
+                moodDeltaForDifficulty: _moodDeltaForDifficulty,
               ),
               _UserQuestList(
                 items: _completed,
                 mode: _ListMode.completed,
+                onReplaceOne: _replaceOne, // won't show for completed
+                moodDeltaForDifficulty: _moodDeltaForDifficulty,
               ),
             ],
           ),
@@ -240,11 +443,15 @@ class _UserQuestList extends StatelessWidget {
   final List<UserQuestDto> items;
   final _ListMode mode;
   final Future<void> Function(UserQuestDto)? onCompleteChecked;
+  final Future<UserQuestDto?> Function(UserQuestDto)? onReplaceOne;
+  final int Function(String) moodDeltaForDifficulty;
 
   const _UserQuestList({
     required this.items,
     required this.mode,
     this.onCompleteChecked,
+    this.onReplaceOne,
+    required this.moodDeltaForDifficulty,
   });
 
   @override
@@ -279,9 +486,12 @@ class _UserQuestList extends StatelessWidget {
       itemBuilder: (context, i) {
         final uq = items[i];
         return _QuestCard(
+          key: ValueKey(uq.userquestid), // stable key to avoid state hopping
           uq: uq,
           mode: mode,
           onCheck: onCompleteChecked == null ? null : () => onCompleteChecked!(uq),
+          onReplace: onReplaceOne == null ? null : () => onReplaceOne!(uq),
+          moodDeltaForDifficulty: moodDeltaForDifficulty,
         );
       },
     );
@@ -291,12 +501,17 @@ class _UserQuestList extends StatelessWidget {
 class _QuestCard extends StatefulWidget {
   final UserQuestDto uq;
   final _ListMode mode;
-  final Future<void> Function()? onCheck; // <<<< changed from VoidCallback?
+  final Future<void> Function()? onCheck;
+  final Future<UserQuestDto?> Function()? onReplace;
+  final int Function(String) moodDeltaForDifficulty;
 
   const _QuestCard({
+    super.key,
     required this.uq,
     required this.mode,
     this.onCheck,
+    this.onReplace,
+    required this.moodDeltaForDifficulty,
   });
 
   @override
@@ -306,6 +521,48 @@ class _QuestCard extends StatefulWidget {
 class _QuestCardState extends State<_QuestCard> {
   bool _expanded = false;
   bool _busy = false;
+  bool _replacing = false;
+
+  void _showImpactSheet(BuildContext ctx) {
+    final q = widget.uq.quest;
+    final mood = widget.moodDeltaForDifficulty(q.difficulty);
+    showModalBottomSheet(
+      context: ctx,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (_) => Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Why this quest matters', style: Theme.of(ctx).textTheme.titleMedium),
+            const SizedBox(height: 12),
+            Text('• Estimated CO₂e impact: ${q.emissions.abs().toStringAsFixed(3)} kg saved'),
+            Text('• Carbon points awarded: ${q.reward}'),
+            Text('• Eco-pet mood on complete: +$mood'),
+            const SizedBox(height: 12),
+            const Text(
+              'Method (short): Based on activity type and typical emissions factors; '
+                  'we compute the kg CO₂e avoided vs a baseline. Points scale with impact and difficulty.',
+              style: TextStyle(color: Colors.black87),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'Note: Values are estimates and may vary with individual habits.',
+              style: TextStyle(fontSize: 12, color: Colors.black54),
+            ),
+            const SizedBox(height: 8),
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Close')),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -336,39 +593,55 @@ class _QuestCardState extends State<_QuestCard> {
               children: [
                 Row(
                   children: [
-                    const Icon(Icons.emoji_events_outlined, color: Colors.orange, size: 28),
+                    const Icon(Icons.emoji_events_outlined,
+                        color: Colors.orange, size: 28),
                     const SizedBox(width: 10),
                     Expanded(
                       child: Text(
                         quest.description,
-                        style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 16),
+                        style: const TextStyle(
+                            fontWeight: FontWeight.w600, fontSize: 16),
                       ),
                     ),
                     if (isCompleted)
-                      const Icon(Icons.check_circle, color: Colors.green, size: 22)
+                      const Icon(Icons.check_circle,
+                          color: Colors.green, size: 22)
                     else
-                      IgnorePointer(
-                        ignoring: _busy,
-                        child: Checkbox(
-                          value: false,
-                          onChanged: (_) async {
-                            if (_busy) return;
-                            setState(() => _busy = true);
-                            try {
-                              if (widget.onCheck != null) {
-                                await widget.onCheck!(); // <<<< now valid to await
-                              }
-                            } finally {
+                      InkWell(
+                        onTap: () {
+                          if (_busy) return;
+                          HapticFeedback.selectionClick();
+                          setState(() => _busy = true);
+                          if (widget.onCheck != null) {
+                            widget.onCheck!().whenComplete(() {
                               if (mounted) setState(() => _busy = false);
-                            }
-                          },
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(4),
+                            });
+                          } else {
+                            if (mounted) setState(() => _busy = false);
+                          }
+                        },
+                        borderRadius: BorderRadius.circular(20),
+                        child: AnimatedSwitcher(
+                          duration: const Duration(milliseconds: 150),
+                          transitionBuilder: (child, anim) =>
+                              ScaleTransition(scale: anim, child: child),
+                          child: _busy
+                              ? const SizedBox(
+                            key: ValueKey('busy'),
+                            width: 24,
+                            height: 24,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                              : const Icon(
+                            key: ValueKey('check'),
+                            Icons.check_box_outline_blank,
+                            size: 24,
                           ),
                         ),
                       ),
                   ],
                 ),
+
                 AnimatedCrossFade(
                   firstChild: const SizedBox.shrink(),
                   secondChild: Padding(
@@ -382,17 +655,61 @@ class _QuestCardState extends State<_QuestCard> {
                             const SizedBox(width: 8),
                             _badge('${quest.reward} pts', Colors.green),
                             const SizedBox(width: 8),
-                            _badge('${quest.emissions.abs().toStringAsFixed(3)} kg CO₂e',
-                                Colors.teal),
+                            _badge(
+                              '${quest.emissions.abs().toStringAsFixed(3)} kg CO₂e',
+                              Colors.teal,
+                            ),
+                            const SizedBox(width: 8),
+                            _badge(
+                              'Mood +${widget.moodDeltaForDifficulty(quest.difficulty)}',
+                              Colors.orange,
+                            ),
                           ],
                         ),
-                        if (widget.uq.completeddate != null) ...[
-                          const SizedBox(height: 8),
-                          Text(
-                            'Completed: ${widget.uq.completeddate}',
-                            style: const TextStyle(fontSize: 12, color: Colors.black54),
-                          ),
-                        ],
+
+                        const SizedBox(height: 8),
+                        Row(
+                          children: [
+                            // Replace only this quest
+                            TextButton.icon(
+                              onPressed: _replacing || isCompleted || widget.onReplace == null
+                                  ? null
+                                  : () async {
+                                setState(() => _replacing = true);
+                                try {
+                                  final upd = await widget.onReplace!.call();
+                                  if (upd != null && mounted) {
+                                    // Parent list has already been updated; just notify.
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      const SnackBar(content: Text('Quest replaced')),
+                                    );
+                                  }
+                                } catch (e) {
+                                  if (!mounted) return;
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(content: Text('Replace failed: $e')),
+                                  );
+                                } finally {
+                                  if (mounted) setState(() => _replacing = false);
+                                }
+                              },
+                              icon: _replacing
+                                  ? const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              )
+                                  : const Icon(Icons.autorenew),
+                              label: const Text('Replace'),
+                            ),
+                            const SizedBox(width: 8),
+                            TextButton.icon(
+                              onPressed: () => _showImpactSheet(context),
+                              icon: const Icon(Icons.info_outline),
+                              label: const Text('Details'),
+                            ),
+                          ],
+                        ),
                       ],
                     ),
                   ),

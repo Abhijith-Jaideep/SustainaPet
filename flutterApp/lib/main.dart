@@ -1,4 +1,5 @@
 // lib/main.dart
+import 'package:carbon_pawprint/screens/socials_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -28,6 +29,7 @@ class SustainaPetApp extends StatelessWidget {
       title: 'SustainaPet',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
+        fontFamily: 'Poppins',
         colorScheme: ColorScheme.fromSeed(
           seedColor: yellow,
           brightness: Brightness.light,
@@ -124,6 +126,7 @@ class _MainNavigationState extends State<MainNavigation> {
     DashboardScreen(),
     QuestScreen(),
     GroceryScannerScreen(),
+    SocialsScreen()
   ];
 
   void _onItemTapped(int index) => setState(() => _selectedIndex = index);
@@ -140,6 +143,7 @@ class _MainNavigationState extends State<MainNavigation> {
           BottomNavigationBarItem(icon: Icon(Icons.dashboard), label: "Dashboard"),
           BottomNavigationBarItem(icon: Icon(Icons.task), label: "Quests"),
           BottomNavigationBarItem(icon: Icon(Icons.receipt_long), label: "Grocery Scanner"),
+          BottomNavigationBarItem(icon: Icon(Icons.groups_2), label: "Socials")
         ],
       ),
     );

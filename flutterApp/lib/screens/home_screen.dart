@@ -1,11 +1,10 @@
 // lib/screens/home_screen.dart
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../widgets/ecopet.dart';
 import '../api/base_url.dart';
-import '../api/pawprint_api.dart'; // PetMood + PawprintApi + petMoodFromScore
+import '../api/pawprint_api.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -16,14 +15,12 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   late final PawprintApi api;
-
   int? _userId;
   String? _userName;
 
-  Future<PetMood>? _futureMood;
-  int _moodScore = 0; // 0..100 for the bar
-
-  static const String onboardingRoute = '/onboarding';
+  // Initialize with a safe default so the UI renders immediately.
+  Future<PetMood>? _futureMood = Future.value(PetMood.neutral);
+  int _moodScore = 0; // 0..100
 
   @override
   void initState() {
@@ -34,8 +31,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _loadUserIdAndMood() async {
     final prefs = await SharedPreferences.getInstance();
-
     final raw = prefs.get('userId');
+
     int? uid;
     if (raw is int) {
       uid = raw;
@@ -43,9 +40,7 @@ class _HomeScreenState extends State<HomeScreen> {
       final parsed = int.tryParse(raw);
       if (parsed != null) {
         uid = parsed;
-        await prefs.setInt('userId', parsed); // migrate
-      } else {
-        await prefs.remove('userId'); // corrupt -> clear
+        await prefs.setInt('userId', parsed);
       }
     }
 
@@ -54,13 +49,14 @@ class _HomeScreenState extends State<HomeScreen> {
     if (uid == null) {
       setState(() {
         _userId = null;
-        _futureMood = null;
+        // Keep the neutral placeholder mood so the screen still renders.
+        _futureMood = Future.value(PetMood.neutral);
       });
       return;
     }
 
     setState(() {
-      _userId = uid!;
+      _userId = uid;
       _futureMood = _fetchMood(uid!);
     });
   }
@@ -70,134 +66,51 @@ class _HomeScreenState extends State<HomeScreen> {
     if (mounted) {
       _userName = dash.user.name;
       _moodScore = dash.user.ecopetmood.clamp(0, 100);
-      setState(() {}); // update username + mood bar
+      setState(() {}); // updates header + bar immediately
     }
     return petMoodFromScore(dash.user.ecopetmood);
   }
 
   String _greeting({String? withName}) {
     final h = DateTime.now().hour;
-    String base = (h < 12)
-        ? 'Good Morning'
-        : (h < 17)
-        ? 'Good Afternoon'
-        : 'Good Evening';
+    String base =
+    (h < 12) ? 'Good Morning' : (h < 17) ? 'Good Afternoon' : 'Good Evening';
     if (withName != null && withName.isNotEmpty) base = '$base, $withName';
     return '$base!';
   }
 
-  Future<void> _resetUser(BuildContext context) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove('userId');
-    await prefs.remove('userName');
-
-    // Exit the app completely
-    SystemNavigator.pop();
-  }
-
-  Future<void> _devResetMoodToZero() async {
-    if (_userId == null) return;
-    try {
-      await api.resetUserMood(_userId!, 0); // ✅ use resetUserMood here
-      if (!mounted) return;
-      setState(() {
-        _moodScore = 0;
-        _futureMood = Future.value(PetMood.sad); // reset EcoPet display
-      });
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('EcoPet mood reset to 0 (Dev).')),
-      );
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to reset mood: $e')),
-      );
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
-    if (_userId == null) {
-      return Scaffold(
-        body: SafeArea(
-          child: Center(
-            child: Padding(
-              padding: const EdgeInsets.all(24),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Icon(Icons.person_off, size: 48, color: Colors.grey),
-                  const SizedBox(height: 12),
-                  const Text(
-                    'No user found on this device.',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(fontSize: 16),
-                  ),
-                  const SizedBox(height: 8),
-                  FilledButton(
-                    onPressed: () {
-                      Navigator.of(context)
-                          .pushReplacementNamed(onboardingRoute);
-                    },
-                    child: const Text('Go to Onboarding'),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
-      );
-    }
-
-    if (_futureMood == null) {
-      return const Scaffold(
-        body: SafeArea(
-          child: Center(child: CircularProgressIndicator()),
-        ),
-      );
-    }
-
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Home'),
-        actions: [
-          PopupMenuButton<String>(
-            onSelected: (v) async {
-              if (v == 'reset') {
-                await _resetUser(context);
-              } else if (v == 'reset_mood') {
-                await _devResetMoodToZero();
-              }
-            },
-            itemBuilder: (context) => const [
-              PopupMenuItem(
-                value: 'reset_mood',
-                child: Text('Dev: Reset EcoPet Mood to 0'),
-              ),
-              PopupMenuItem(
-                value: 'reset',
-                child: Text('Reset User (Dev)'),
-              ),
-            ],
-          ),
-        ],
-      ),
+      appBar: AppBar(title: const Text('Home')),
       body: SafeArea(
-        child: LayoutBuilder(
-          builder: (context, c) {
-            final maxWidth = c.maxWidth;
+        child: FutureBuilder<PetMood>(
+          future: _futureMood,
+          builder: (context, snap) {
+            if (snap.connectionState == ConnectionState.waiting && _userId == null) {
+              // Only show spinner if we truly have no user and are still figuring it out
+              return const Center(child: CircularProgressIndicator());
+            }
 
-            // Unified size so EcoPet and the bar are EXACTLY the same height
-            final double petSize = maxWidth < 400 ? maxWidth * 0.9 : 360.0;
+            // Use neutral until we get a real mood.
+            final mood = snap.data ?? PetMood.neutral;
+            final clamped = _moodScore.clamp(0, 100);
+            final feelingText = clamped < 31
+                ? "I'm feeling sad..."
+                : clamped < 61
+                ? "I'm doing okay!"
+                : clamped < 81
+                ? "I'm feeling good!"
+                : "I'm feeling great!";
 
             return SingleChildScrollView(
-              padding: const EdgeInsets.fromLTRB(20, 20, 20, 32),
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  // Header text block, centered and tidy
+                  // Greeting header (kept)
                   Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    padding: const EdgeInsets.symmetric(vertical: 8),
                     child: Column(
                       children: [
                         Text(
@@ -205,87 +118,81 @@ class _HomeScreenState extends State<HomeScreen> {
                           textAlign: TextAlign.center,
                           style: Theme.of(context)
                               .textTheme
-                              .headlineMedium
+                              .headlineSmall
                               ?.copyWith(fontWeight: FontWeight.bold),
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          "Here's how your EcoPet is feeling today",
-                          textAlign: TextAlign.center,
-                          style: Theme.of(context)
-                              .textTheme
-                              .bodyLarge
-                              ?.copyWith(color: Colors.grey.shade700),
                         ),
                       ],
                     ),
                   ),
-                  const SizedBox(height: 24),
+                  const SizedBox(height: 12),
 
-                  // Main content: EcoPet + vertical bar, same height, nicely aligned
-                  FutureBuilder<PetMood>(
-                    future: _futureMood,
-                    builder: (context, snap) {
-                      if (snap.connectionState ==
-                          ConnectionState.waiting) {
-                        return const Center(
-                            child: CircularProgressIndicator());
-                      }
-                      if (snap.hasError) {
-                        return Column(
-                          children: [
-                            const Icon(Icons.error_outline,
-                                size: 40, color: Colors.red),
-                            const SizedBox(height: 8),
-                            Text(
-                              "Failed to load EcoPet:\n${snap.error}",
-                              textAlign: TextAlign.center,
-                            ),
-                            const SizedBox(height: 8),
-                            OutlinedButton(
-                              onPressed: () {
-                                final id = _userId;
-                                if (id != null) {
-                                  setState(() =>
-                                  _futureMood = _fetchMood(id));
-                                }
-                              },
-                              child: const Text("Retry"),
-                            ),
-                          ],
-                        );
-                      }
-
-                      final mood = snap.data ?? PetMood.neutral;
-                      final clamped = _moodScore.clamp(0, 100);
-
-                      // Lock the row to a fixed height so both children match
-                      return SizedBox(
-                        height: petSize,
-                        child: Row(
-                          crossAxisAlignment: CrossAxisAlignment.center,
-                          children: [
-                            // EcoPet: fills available width, constrained to petSize height
-                            Expanded(
-                              child: Center(
-                                child: SizedBox(
-                                  height: petSize,
-                                  child: EcoPet(mood: mood),
-                                ),
-                              ),
-                            ),
-                            const SizedBox(width: 18),
-
-                            // Vertical mood bar: same height as the pet
-                            _VerticalMoodBar(
-                              score: clamped,
-                              height: petSize,
-                              width: 22,
-                            ),
-                          ],
+                  // ====== EcoPet Frame (fills width) ======
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(18),
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(18),
+                      image: const DecorationImage(
+                        // Make sure this exists in assets and is in pubspec.yaml
+                        image: AssetImage('assets/ecopet_bg.png'),
+                        fit: BoxFit.cover,
+                      ),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withOpacity(0.08),
+                          blurRadius: 8,
+                          offset: const Offset(0, 4),
                         ),
-                      );
-                    },
+                      ],
+                    ),
+                    child: Container(
+                      decoration: BoxDecoration(
+                        color: Colors.white.withOpacity(0.75),
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                      padding: const EdgeInsets.all(18),
+                      child: LayoutBuilder(
+                        builder: (context, c) {
+                          final isNarrow = c.maxWidth < 520;
+                          final double petHeight = isNarrow ? 300 : 340;
+
+                          final pet = SizedBox(
+                            height: petHeight,
+                            // Give EcoPet clear constraints and center it.
+                            child: Center(child: EcoPet(mood: mood)),
+                          );
+
+                          final bubble = _SpeechBubble(
+                            text: feelingText,
+                            tailOnLeft: !isNarrow, // left tail in wide layout
+                          );
+
+                          return Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              if (isNarrow) ...[
+                                pet,
+                                const SizedBox(height: 12),
+                                bubble,
+                              ] else ...[
+                                Row(
+                                  crossAxisAlignment: CrossAxisAlignment.center,
+                                  children: [
+                                    // Pet
+                                    Expanded(flex: 3, child: pet),
+                                    const SizedBox(width: 20),
+                                    // Speech bubble
+                                    Expanded(flex: 4, child: bubble),
+                                  ],
+                                ),
+                              ],
+                              const SizedBox(height: 20),
+                              _HorizontalMoodBar(score: clamped),
+                            ],
+                          );
+                        },
+                      ),
+                    ),
                   ),
                 ],
               ),
@@ -297,79 +204,141 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 }
 
-class _VerticalMoodBar extends StatelessWidget {
-  final int score; // 0..100
-  final double height;
-  final double width;
-  const _VerticalMoodBar({
-    required this.score,
-    required this.height,
-    this.width = 18,
-  });
+/// Horizontal mood (happiness) bar with white border
+class _HorizontalMoodBar extends StatelessWidget {
+  final int score;
+  const _HorizontalMoodBar({required this.score});
 
   @override
   Widget build(BuildContext context) {
     final clamped = score.clamp(0, 100);
     final pct = clamped / 100.0;
+    final barColor =
+    clamped < 31 ? Colors.red : clamped < 61 ? Colors.amber : Colors.green;
 
-    Color barColor;
-    if (clamped < 31) {
-      barColor = Colors.red;
-    } else if (clamped < 61) {
-      barColor = Colors.amber;
-    } else {
-      barColor = Colors.green;
-    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const Text(
+          'Happiness Level',
+          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+        ),
+        const SizedBox(height: 8),
 
-    return SizedBox(
-      height: height,
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Text('100',
-              style: Theme.of(context)
-                  .textTheme
-                  .labelSmall
-                  ?.copyWith(color: Colors.grey)),
-          // Bar
-          Expanded(
-            child: Container(
-              margin: const EdgeInsets.symmetric(vertical: 6),
-              width: width,
-              decoration: BoxDecoration(
-                color: Colors.grey.shade200,
-                borderRadius: BorderRadius.circular(width),
+        // Outer white bordered capsule
+        Container(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(22),
+            border: Border.all(color: Colors.white, width: 2), // white border
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.05),
+                blurRadius: 6,
+                offset: const Offset(0, 2),
               ),
-              child: Align(
-                alignment: Alignment.bottomCenter,
-                child: FractionallySizedBox(
-                  heightFactor: pct, // fill from bottom up
-                  widthFactor: 1,
-                  child: Container(
-                    decoration: BoxDecoration(
-                      color: barColor,
-                      borderRadius: BorderRadius.circular(width),
-                    ),
-                  ),
+            ],
+          ),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(20),
+            child: Stack(
+              children: [
+                // Track
+                Container(height: 22, color: Colors.grey.shade300),
+                // Fill
+                FractionallySizedBox(
+                  widthFactor: pct,
+                  child: Container(height: 22, color: barColor),
                 ),
-              ),
+              ],
             ),
           ),
-          Text('0',
-              style: Theme.of(context)
-                  .textTheme
-                  .labelSmall
-                  ?.copyWith(color: Colors.grey)),
-          const SizedBox(height: 6),
-          Text(
-            '$clamped / 100',
-            style: Theme.of(context)
-                .textTheme
-                .labelMedium
-                ?.copyWith(fontWeight: FontWeight.w600),
+        ),
+      ],
+    );
+  }
+}
+
+/// Speech bubble for EcoPet's mood message
+class _SpeechBubble extends StatelessWidget {
+  final String text;
+  final bool tailOnLeft;
+  const _SpeechBubble({required this.text, this.tailOnLeft = true});
+
+  @override
+  Widget build(BuildContext context) {
+    final bubble = Container(
+      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.grey.shade300),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.08),
+            blurRadius: 5,
+            offset: const Offset(0, 2),
           ),
         ],
       ),
+      child: Text(
+        text,
+        textAlign: TextAlign.center,
+        style: const TextStyle(
+          fontSize: 18,
+          fontWeight: FontWeight.w600,
+          color: Colors.black87,
+        ),
+      ),
+    );
+
+    final tail = CustomPaint(
+      size: const Size(16, 12),
+      painter: _TrianglePainter(
+        color: Colors.white,
+        strokeColor: Colors.grey.shade300,
+        pointLeft: tailOnLeft,
+      ),
+    );
+
+    return Row(
+      children: tailOnLeft
+          ? [tail, const SizedBox(width: 6), Expanded(child: bubble)]
+          : [Expanded(child: bubble), const SizedBox(width: 6), tail],
     );
   }
+}
+
+class _TrianglePainter extends CustomPainter {
+  final Color color;
+  final Color strokeColor;
+  final bool pointLeft;
+  _TrianglePainter({
+    required this.color,
+    required this.strokeColor,
+    this.pointLeft = true,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final fill = Paint()..color = color;
+    final stroke = Paint()
+      ..color = strokeColor
+      ..style = PaintingStyle.stroke;
+    final path = Path();
+    if (pointLeft) {
+      path.moveTo(0, size.height / 2);
+      path.lineTo(size.width, 0);
+      path.lineTo(size.width, size.height);
+    } else {
+      path.moveTo(size.width, size.height / 2);
+      path.lineTo(0, 0);
+      path.lineTo(0, size.height);
+    }
+    path.close();
+    canvas.drawPath(path, fill);
+    canvas.drawPath(path, stroke);
+  }
+
+  @override
+  bool shouldRepaint(covariant _TrianglePainter oldDelegate) => false;
 }

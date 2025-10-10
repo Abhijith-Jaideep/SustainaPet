@@ -181,6 +181,51 @@ class _DashboardScreenState extends State<DashboardScreen> {
       ));
     }
 
+    // ====== Compute Daily Streak (consecutive days with ≥1 event) ======
+    final nowLocal = DateTime.now();
+    final today = DateTime(nowLocal.year, nowLocal.month, nowLocal.day);
+
+    // Put all unique local dates with events into a Set<String> yyyy-MM-dd
+    final Set<String> eventDays = {
+      for (final e in events)
+        _fmtDate(DateTime(e.datetime.year, e.datetime.month, e.datetime.day))
+    };
+
+    // Count consecutive days ending at today (if today has none, streak ends at yesterday)
+    int streak = 0;
+    DateTime cursor =
+    eventDays.contains(_fmtDate(today)) ? today : today.subtract(const Duration(days: 1));
+
+    while (eventDays.contains(_fmtDate(cursor))) {
+      streak += 1;
+      cursor = cursor.subtract(const Duration(days: 1));
+    }
+
+    // ====== Reward at 7, 14, 21... days (one-time per multiple) ======
+    int carbonPoints = prefs.getInt('carbon_points_$uid') ?? 0;
+    int lastRewardMultiple = prefs.getInt('streak_last_multiple_$uid') ?? 0;
+
+    final currentMultiple = streak ~/ 7; // 0,1,2,...
+    if (currentMultiple > lastRewardMultiple && currentMultiple > 0) {
+      // award 100 points per new multiple crossed (usually +100 at 7, 14, 21...)
+      final earned = 100 * (currentMultiple - lastRewardMultiple);
+      carbonPoints += earned;
+      await prefs.setInt('carbon_points_$uid', carbonPoints);
+      await prefs.setInt('streak_last_multiple_$uid', currentMultiple);
+
+      if (mounted) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              backgroundColor: const Color(0xFF2E7D32),
+              content: Text(
+                  '🔥 Streak reward! +$earned carbon points for ${currentMultiple * 7}-day streak'),
+            ),
+          );
+        });
+      }
+    }
+
     return _DashData(
       emittedKg: emittedWeekly, // weekly_emissions_produced (as-is)
       savedKg: savedWeekly, // weekly_emissions_saved (as-is; may be negative)
@@ -189,6 +234,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
       weekLabels: weekLabels,
       metrics: metrics,
       events: events,
+      streakDays: streak,
+      carbonPoints: carbonPoints,
     );
   }
 
@@ -331,6 +378,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
+                  // === NEW: 7-segment Streak bar at the top ===
+                  _StreakBarCard(streakDays: data.streakDays, carbonPoints: data.carbonPoints),
+                  const SizedBox(height: 12),
+
                   // === Top row: Carbon Emitted + Carbon Saved (WEEKLY) ===
                   if (isNarrow) ...[
                     emittedCard,
@@ -427,6 +478,10 @@ class _DashData {
   final List<_Metric> metrics;
   final List<EventDto> events;
 
+  // NEW: streak + points
+  final int streakDays;
+  final int carbonPoints;
+
   _DashData({
     required this.emittedKg,
     required this.savedKg,
@@ -435,6 +490,8 @@ class _DashData {
     required this.weekLabels,
     required this.metrics,
     required this.events,
+    required this.streakDays,
+    required this.carbonPoints,
   });
 }
 
@@ -481,6 +538,120 @@ class _SectionHeader extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+/* ====================== NEW: 7-Segment Streak Bar Card ====================== */
+
+class _StreakBarCard extends StatelessWidget {
+  final int streakDays;
+  final int carbonPoints;
+  const _StreakBarCard({required this.streakDays, required this.carbonPoints});
+
+  @override
+  Widget build(BuildContext context) {
+    const cycle = 7;
+    final inCycle = streakDays == 0 ? 0 : (streakDays % cycle);
+    final filled = inCycle == 0 && streakDays > 0 ? cycle : inCycle; // full at 7,14,...
+    final remaining = (filled == cycle) ? 0 : (cycle - filled);
+
+    return _CardShell(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Header + points pill
+          Row(
+            children: [
+              const Icon(Icons.local_fire_department, color: Colors.deepOrange),
+              const SizedBox(width: 8),
+              const Text(
+                'Daily Streak',
+                style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16),
+              ),
+              const Spacer()
+            ],
+          ),
+          const SizedBox(height: 12),
+
+          // 7 segments
+          SizedBox(
+            height: 28,
+            child: Row(
+              children: List.generate(7, (i) {
+                final isFilled = i < filled;
+                final isFirst = i == 0;
+                final isLast = i == 6;
+
+                return Expanded(
+                  child: Container(
+                    margin: EdgeInsets.only(left: isFirst ? 0 : 6),
+                    decoration: BoxDecoration(
+                      color: isFilled ? const Color(0xFFFFC107) : const Color(0xFFFFF1B7),
+                      borderRadius: BorderRadius.horizontal(
+                        left: isFirst ? const Radius.circular(12) : Radius.zero,
+                        right: isLast ? const Radius.circular(12) : Radius.zero,
+                      ),
+                      border: Border.all(
+                        color: isFilled ? const Color(0xFFE7B006) : const Color(0xFFEFD787),
+                      ),
+                    ),
+                  ),
+                );
+              }),
+            ),
+          ),
+
+          const SizedBox(height: 10),
+
+          // Reward chip + helper text
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                decoration: BoxDecoration(
+                  color: filled == 7 ? const Color(0xFF2E7D32) : const Color(0xFFE8F5E9),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(
+                    color: filled == 7 ? const Color(0xFF1B5E20) : const Color(0xFFB2DFDB),
+                  ),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      filled == 7 ? Icons.emoji_events : Icons.emoji_events_outlined,
+                      size: 18,
+                      color: filled == 7 ? Colors.white : const Color(0xFF2E7D32),
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      filled == 7 ? 'Reward: +100 pts' : 'Reward at 7 days: +100 pts',
+                      style: TextStyle(
+                        fontWeight: FontWeight.w700,
+                        color: filled == 7 ? Colors.white : const Color(0xFF2E7D32),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const Spacer(),
+              Text(
+                filled == 7
+                    ? 'Great job! 🎉'
+                    : (remaining == 1 ? '1 day to next reward' : '$remaining days to next reward'),
+                style: const TextStyle(fontSize: 12, color: Colors.black87, fontWeight: FontWeight.w600),
+              ),
+            ],
+          ),
+
+          const SizedBox(height: 6),
+          Text(
+            'Current streak: $streakDays day${streakDays == 1 ? '' : 's'} (log 1 action/day)',
+            style: const TextStyle(fontSize: 12, color: Colors.black54),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -731,7 +902,7 @@ class _ConversionGrid extends StatelessWidget {
         crossAxisCount: cols,
         mainAxisSpacing: 10,
         crossAxisSpacing: 10,
-        mainAxisExtent: tileHeight, // key: taller tiles
+        mainAxisExtent: tileHeight,
       ),
       itemBuilder: (context, i) {
         final m = metrics[i];
@@ -768,7 +939,6 @@ class _ConversionGrid extends StatelessWidget {
                     mainAxisAlignment: MainAxisAlignment.center,
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      // Title (allow up to 2 lines, wrap)
                       Flexible(
                         child: Text(
                           m.name,
@@ -781,7 +951,6 @@ class _ConversionGrid extends StatelessWidget {
                         ),
                       ),
                       const SizedBox(height: 4),
-                      // Sentence: wrap fully, no ellipses
                       Flexible(
                         child: Text(
                           sentence,
@@ -834,8 +1003,8 @@ class MonthlyEmissionsChart extends StatelessWidget {
               yTicks: yTicks,
               axisColor: Colors.grey.shade400,
               gridColor: Colors.grey.shade300,
-              posBarColor: const Color(0xFFE74C3C), // red for +kg
-              negBarColor: const Color(0xFF2E7D32), // green for -kg (savings)
+              posBarColor: const Color(0xFFE74C3C),
+              negBarColor: const Color(0xFF2E7D32),
               labelStyle: const TextStyle(fontSize: 11, color: Colors.black87),
             ),
           ),
@@ -1023,3 +1192,6 @@ String _fmtDateTime(DateTime dt) {
   final mm = _pad2(d.minute);
   return '$y-$m-$day $hh:$mm';
 }
+
+// yyyy-MM-dd (used in streak & table)
+String _fmtDate(DateTime dt) => '${dt.year}-${_pad2(dt.month)}-${_pad2(dt.day)}';

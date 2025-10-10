@@ -79,6 +79,7 @@ flutter:
     - assets/images/eco_pet/
     - assets/app_icon/
     - assets/splash/
+    - assets/images/eco_pet/ecopet_bg.png
 
   # The following line ensures that the Material Icons font is
   # included with your application, so that you can use the icons in

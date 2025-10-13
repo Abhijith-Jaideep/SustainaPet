@@ -541,7 +541,9 @@ class _StreakBarCard extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 10),
-          Row(
+          // New: chip on first line, status on next line
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start, // or .stretch + Align(...) if you want right-align
             children: [
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
@@ -571,13 +573,17 @@ class _StreakBarCard extends StatelessWidget {
                   ],
                 ),
               ),
-              const Spacer(),
+              const SizedBox(height: 6),
+              // ⬇️ This is now on the next line
               Text(
                 filled == 7
                     ? 'Great job! 🎉'
                     : (remaining == 1 ? '1 day to next reward' : '$remaining days to next reward'),
                 style: const TextStyle(
-                    fontSize: 12, color: Colors.black87, fontWeight: FontWeight.w600),
+                  fontSize: 12,
+                  color: Colors.black87,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
             ],
           ),

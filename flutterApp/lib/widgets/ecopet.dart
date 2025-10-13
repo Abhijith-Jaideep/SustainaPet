@@ -45,14 +45,6 @@ class EcoPet extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 12),
-        Text(
-          _messageForMood(),
-          textAlign: TextAlign.center,
-          style: Theme.of(context)
-              .textTheme
-              .bodyMedium
-              ?.copyWith(fontWeight: FontWeight.w600, color: Colors.green),
-        ),
       ],
     );
   }

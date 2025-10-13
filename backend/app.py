@@ -12,20 +12,20 @@ from io import BytesIO
 from PIL import Image, UnidentifiedImageError
 
 import pandas as pd
-from backend.emissions_models.ItemToDataset import (
+from emissions_models.ItemToDataset import (
     map_receipt_with_emissions,
     build_index_from_emissions,
     build_category_index,
 )
 
-from backend.models import GroceryReceipt
+from models import GroceryReceipt
 
 
 MAX_IMAGE_BYTES = int(os.environ.get("MAX_IMAGE_BYTES", "6000000"))  # ~6 MB
 
-from backend.db import SessionLocal
-from backend.models import FriendRequests, Friends, RequestStatusEnum, User, Quest, UserQuest, Event, EmissionConversionSaving
-from backend.receipt_update.receipt_parser import extract_items_from_bytes
+from db import SessionLocal
+from models import FriendRequests, Friends, RequestStatusEnum, User, Quest, UserQuest, Event, EmissionConversionSaving
+from receipt_update.receipt_parser import extract_items_from_bytes
 
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "*"}})  # relax as needed for dev

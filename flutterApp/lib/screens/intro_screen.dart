@@ -55,10 +55,9 @@ class IntroScreen extends StatelessWidget {
                     ),
                     const SizedBox(height: 8),
                     const Text(
-                      'SustainaPet is your playful companion for living greener. '
-                          'Scan grocery receipts to estimate their CO₂e, complete bite-size eco quests to earn carbon points, '
-                          'and watch your eco-pet’s mood improve as your footprint goes down. '
-                          'Clear weekly and monthly insights plus friendly conversions like trees or kWh make your impact easy to understand and act on.',
+                      'Welcome to SustainaPet, Your Eco Buddy!'
+                      'Scan receipts, complete eco quests'
+                      'and watch your pet grow happier as your footprint goes down.',
                       textAlign: TextAlign.center,
                       style: TextStyle(
                         fontSize: 15,

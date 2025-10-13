@@ -46,6 +46,25 @@ class UserQuest(Base):
         primaryjoin="foreign(UserQuest.questid) == Quest.questid",
         viewonly=True)
 
+# ---------------------- GroceryReceipt ----------------------
+class GroceryReceipt(Base):
+    __tablename__ = quoted_name("GroceryReceipt", True)
+
+    receiptid = Column(Integer, primary_key=True, autoincrement=True)
+    userid = Column(Integer, ForeignKey('User.userid', ondelete="CASCADE"), nullable=False)
+    totalemissions = Column(Float, nullable=False, default=0.0)
+    date = Column(DateTime, nullable=False)
+
+    user = relationship("User", backref="groceryreceipts")
+
+    # tell SQLAlchemy which FK on Event points here
+    events = relationship(
+        "Event",
+        back_populates="receipt",
+        foreign_keys="Event.receiptid",
+    )
+
+
 class Event(Base):
     __tablename__ = "event"
     eventid = Column(Integer, primary_key=True)
@@ -53,16 +72,31 @@ class Event(Base):
     userid = Column(Integer, ForeignKey('User.userid', ondelete="CASCADE"), nullable=False)
     userquestid = Column(Integer, ForeignKey('userquests.userquestid', ondelete="CASCADE"), nullable=True)
 
-    receiptid = Column(Integer)
+    # ADD the FK to GroceryReceipt
+    receiptid = Column(
+        Integer,
+        ForeignKey('GroceryReceipt.receiptid', ondelete="CASCADE"),
+        nullable=True,
+    )
     tripid = Column(Integer)
+
     description = Column(Text, nullable=False)
-    type = Column(String(7), nullable=False)         # enum in DB → String here
+    type = Column(String(7), nullable=False)
     emissions = Column(Float, nullable=False)
     datetime = Column(DateTime, nullable=False)
 
     user = relationship("User")
     userquest = relationship("UserQuest")
 
+    # back link to GroceryReceipt
+    receipt = relationship(
+        "GroceryReceipt",
+        back_populates="events",
+        foreign_keys=[receiptid],
+    )
+
+
+# ---------------------- Conversion metrics ----------------------
 class EmissionConversionSaving(Base):
     __tablename__ = "emissionconversionssaving"
     metricid = Column(Integer, primary_key=True)

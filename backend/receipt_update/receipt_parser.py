@@ -2,20 +2,41 @@
 import re, json, pathlib
 from typing import List, Dict, Optional
 from google.cloud import vision
+# receipt_parser.py
+import os, json
+from pathlib import Path
+from typing import Optional, List, Dict
+from google.cloud import vision
+from google.oauth2 import service_account
 
-# =========================
-# Vision client factory
-# =========================
 def _make_vision_client(key_path: Optional[str] = None) -> vision.ImageAnnotatorClient:
     """
-    Returns an ImageAnnotatorClient. If key_path is provided, uses that service-account
-    key file directly; otherwise falls back to default credentials / env var.
+    Prefer GOOGLE_APPLICATION_CREDENTIALS_JSON (inline JSON),
+    otherwise resolve GOOGLE_APPLICATION_CREDENTIALS (file path).
+    If relative, resolve from the project root (parent of backend/).
+    Otherwise use default application credentials.
     """
-    if key_path:
-        return vision.ImageAnnotatorClient.from_service_account_file(key_path)
+    # 1) Inline JSON (best for hosted envs without a file)
+    inline = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS_JSON")
+    if inline:
+        info = json.loads(inline)
+        creds = service_account.Credentials.from_service_account_info(info)
+        return vision.ImageAnnotatorClient(credentials=creds)
+
+    # 2) File path (env or argument). Resolve relative to repo root.
+    path = key_path or os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+    if path:
+        if not os.path.isabs(path):
+            # project root = parent of backend/
+            base = Path(__file__).resolve().parents[1]
+            path = str((base / path).resolve())
+        if Path(path).exists():
+            return vision.ImageAnnotatorClient.from_service_account_file(path)
+
+    # 3) Default credentials (GKE/Cloud Run/Compute Engine, etc.)
     return vision.ImageAnnotatorClient()
 
-# =========================
+
 # OCR → words → lines
 # =========================
 def _word_center_y(verts) -> float:

@@ -5,9 +5,27 @@ from datetime import datetime, timedelta
 from pytest import Session
 from sqlalchemy import select, func, cast, Integer
 import os
+# --- add these ---
+import re
+import base64 as _b64
+from io import BytesIO
+from PIL import Image, UnidentifiedImageError
+
+import pandas as pd
+from backend.emissions_models.ItemToDataset import (
+    map_receipt_with_emissions,
+    build_index_from_emissions,
+    build_category_index,
+)
+
+from backend.models import GroceryReceipt
+
+
+MAX_IMAGE_BYTES = int(os.environ.get("MAX_IMAGE_BYTES", "6000000"))  # ~6 MB
 
 from backend.db import SessionLocal
 from backend.models import FriendRequests, Friends, RequestStatusEnum, User, Quest, UserQuest, Event, EmissionConversionSaving
+from backend.receipt_update.receipt_parser import extract_items_from_bytes
 
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "*"}})  # relax as needed for dev
@@ -69,6 +87,56 @@ def _month_bounds(year: int, month: int):
         end = datetime(year, month + 1, 1)
     return start, end
 
+# ---- mapping cache (globals) ----
+items_index = None
+cat_index = None
+df_emissions = None
+df_category_emissions = None
+
+def _bump_weekly(user: User, delta_kg: float) -> None:
+    # no-op stub so route doesn't crash; wire to your counters if you have them
+    return
+
+def _ensure_emission_refs_loaded():
+    """
+    Lazy-load FoodEmissions / CategoryEmissions from the SAME database your app already uses,
+    then build indices once and cache them in globals.
+    """
+    global items_index, cat_index, df_emissions, df_category_emissions
+    if items_index is not None and cat_index is not None:
+        return
+
+    s = SessionLocal()
+    try:
+        engine = s.get_bind()
+
+        # Pull only the columns we use
+        df_em = pd.read_sql('SELECT "Name","Emissions","Impact" FROM pawprint."FoodEmissions";', engine)
+        df_cat = pd.read_sql('SELECT "Category","Emissions","Impact" FROM pawprint."CategoryEmissions";', engine)
+
+        # Clean + numeric
+        df_em = df_em[df_em["Name"].notna()].copy()
+        df_cat = df_cat[df_cat["Category"].notna()].copy()
+        df_em["Emissions"] = pd.to_numeric(df_em["Emissions"], errors="coerce").fillna(0.0)
+        df_cat["Emissions"] = pd.to_numeric(df_cat["Emissions"], errors="coerce").fillna(0.0)
+
+        # Build indices using your helper functions
+        idx = build_index_from_emissions(df_em, name_col="Name")
+        cat = build_category_index(df_cat["Category"].tolist())
+
+        # Publish to globals
+        df_emissions = df_em
+        df_category_emissions = df_cat
+        items_index = idx
+        cat_index = cat
+
+        # Rebind to module globals (Python scoping)
+        globals()["df_emissions"] = df_emissions
+        globals()["df_category_emissions"] = df_category_emissions
+        globals()["items_index"] = items_index
+        globals()["cat_index"] = cat_index
+    finally:
+        s.close()
 
 # ---------- misc / health ----------
 @api.get("/ping")
@@ -461,104 +529,135 @@ def user_dashboard(userid):
 # ---------- Monthly Emissions ----------
 @api.get("/users/<int:userid>/emissions/monthly")
 def user_monthly_emissions(userid):
-    """
-    Query params:
-      - year (default: current UTC year)
-      - month 1..12 (default: current UTC month)
-
-    Returns totals (emitted/saved/net), weekly buckets (1–5), and by-type breakdown.
-    """
     now = datetime.utcnow()
     year = int(request.args.get("year", now.year))
     month = int(request.args.get("month", now.month))
-    if month < 1 or month > 12:
-        abort(400, description="month must be 1..12")
+    if month < 1 or month > 12: abort(400, description="month must be 1..12")
 
     session = SessionLocal()
     try:
         user = session.get(User, userid)
-        if not user:
-            abort(404, description="User not found")
-
+        if not user: abort(404, description="User not found")
         start, end = _month_bounds(year, month)
 
-        # Totals
-        total_sum = session.execute(
-            select(func.coalesce(func.sum(Event.emissions), 0.0))
-            .where(Event.userid == userid)
-            .where(Event.datetime >= start)
-            .where(Event.datetime < end)
-        ).scalar_one()
-
-        emitted_pos = session.execute(
-            select(func.coalesce(func.sum(Event.emissions), 0.0))
-            .where(Event.userid == userid)
-            .where(Event.datetime >= start)
-            .where(Event.datetime < end)
-            .where(Event.emissions > 0.0)
-        ).scalar_one()
-
-        saved_raw = session.execute(
-            select(func.coalesce(func.sum(Event.emissions), 0.0))
-            .where(Event.userid == userid)
-            .where(Event.datetime >= start)
-            .where(Event.datetime < end)
-            .where(Event.emissions < 0.0)
-        ).scalar_one()
+        total_sum = session.execute(select(func.coalesce(func.sum(Event.emissions), 0.0))
+            .where(Event.userid == userid, Event.datetime >= start, Event.datetime < end)).scalar_one()
+        emitted_pos = session.execute(select(func.coalesce(func.sum(Event.emissions), 0.0))
+            .where(Event.userid == userid, Event.datetime >= start, Event.datetime < end, Event.emissions > 0.0)).scalar_one()
+        saved_raw = session.execute(select(func.coalesce(func.sum(Event.emissions), 0.0))
+            .where(Event.userid == userid, Event.datetime >= start, Event.datetime < end, Event.emissions < 0.0)).scalar_one()
         saved_mag = abs(float(saved_raw)) if saved_raw else 0.0
 
-        # Weekly buckets (1–5): floor((day-1)/7)+1
-        week_of_month = cast(
-            (func.floor((func.extract("day", Event.datetime) - 1) / 7) + 1),
-            Integer,
-        )
-        weekly_rows = session.execute(
-            select(
-                week_of_month.label("week"),
-                func.coalesce(func.sum(Event.emissions), 0.0).label("kg"),
-            )
-            .where(Event.userid == userid)
-            .where(Event.datetime >= start)
-            .where(Event.datetime < end)
-            .group_by(week_of_month)
-            .order_by(week_of_month.asc())
-        ).all()
+        week_of_month = cast((func.floor((func.extract("day", Event.datetime) - 1) / 7) + 1), Integer)
+        weekly_rows = session.execute(select(
+            week_of_month.label("week"),
+            func.coalesce(func.sum(Event.emissions), 0.0).label("kg"),
+        ).where(Event.userid == userid, Event.datetime >= start, Event.datetime < end)
+         .group_by(week_of_month).order_by(week_of_month.asc())).all()
         weekly = [{"week": int(w.week), "kg": float(w.kg)} for w in weekly_rows]
 
-        # By type
-        type_rows = session.execute(
-            select(
-                Event.type.label("type"),
-                func.coalesce(func.sum(Event.emissions), 0.0).label("kg"),
-            )
-            .where(Event.userid == userid)
-            .where(Event.datetime >= start)
-            .where(Event.datetime < end)
-            .group_by(Event.type)
-            .order_by(Event.type.asc())
-        ).all()
-        breakdown = [
-            {"type": r.type, "kg": float(r.kg)} for r in type_rows if r.type is not None
-        ]
+        type_rows = session.execute(select(Event.type.label("type"), func.coalesce(func.sum(Event.emissions), 0.0).label("kg"))
+            .where(Event.userid == userid, Event.datetime >= start, Event.datetime < end)
+            .group_by(Event.type).order_by(Event.type.asc())).all()
+        breakdown = [{"type": r.type, "kg": float(r.kg)} for r in type_rows if r.type is not None]
 
         return jsonify({
             "user": {"userid": user.userid, "name": user.name},
-            "period": {
-                "year": year,
-                "month": month,
-                "start": start.date().isoformat(),
-                "end": end.date().isoformat(),
-            },
-            "totals": {
-                "emitted_kg": float(emitted_pos),
-                "saved_kg": float(saved_mag),
-                "net_kg": float(total_sum),  # could be negative if net saving
-            },
+            "period": {"year": year, "month": month, "start": start.date().isoformat(), "end": end.date().isoformat()},
+            "totals": {"emitted_kg": float(emitted_pos), "saved_kg": float(saved_mag), "net_kg": float(total_sum)},
             "weekly": weekly,
             "breakdown_by_type": breakdown,
         })
     finally:
         session.close()
+
+# ---------- Photo Extraction placeholder ----------
+@api.post("/users/<int:userid>/emissions/monthly")
+def user_photo_info():
+    return jsonify({"ok": False, "error": "not implemented"}), 501
+
+# ---------- Receipt Parsing ----------
+def _normalize_b64(s: str) -> bytes:
+    s = re.sub(r'^data:image/[^;]+;base64,', '', s, flags=re.I)
+    s = s.replace('-', '+').replace('_', '/')
+    pad = (-len(s)) % 4
+    if pad: s += '=' * pad
+    return _b64.b64decode(s, validate=False)
+
+@api.post("/receipt-parser")
+def update_receipt():
+    data = request.get_json(silent=True) or {}
+    b64s = data.get("image_base64")
+    if not b64s:
+        return jsonify({"error": "No image_base64 field"}), 400
+
+    try:
+        # quick size gate on the base64 payload (~0.75 factor -> decoded bytes)
+        approx_bytes = int(len(b64s) * 0.75)
+        if approx_bytes > MAX_IMAGE_BYTES:
+            return jsonify({"error": f"image too large; limit {MAX_IMAGE_BYTES} bytes"}), 413
+
+        # decode & sanity check
+        img_bytes = _normalize_b64(b64s)
+        with Image.open(BytesIO(img_bytes)) as im:
+            im.verify()
+
+        # Let receipt_parser decide how to create the Vision client/creds.
+        # Just pass through whatever the env provides (path or inline JSON).
+        key_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+        items_parsed = extract_items_from_bytes(img_bytes, key_path=key_path)
+
+        return jsonify({"receipt_json": items_parsed})
+
+    except UnidentifiedImageError:
+        return jsonify({"error": "invalid_image"}), 400
+    except Exception as e:
+        return jsonify({"error": "Parsing failed", "detail": str(e)}), 500
+
+
+@api.post("/users/<int:userid>/map-receipt")  # <-- fixed leading slash
+def map_receipt_route(userid):
+    receipt_json = request.get_json(silent=True)
+    if receipt_json is None:
+        return jsonify({"error": "invalid_json"}), 400
+
+    _ensure_emission_refs_loaded()
+    session = SessionLocal()
+    try:
+        df_filtered = map_receipt_with_emissions(
+            receipt_json,
+            items_index,
+            cat_index,
+            df_emissions,
+            df_category_emissions
+        )
+
+        total_emissions = float(df_filtered["TotalEmissions"].sum())
+
+        gr = GroceryReceipt(userid=userid, totalemissions=total_emissions, date=datetime.utcnow())
+        session.add(gr)
+        session.flush()
+
+        ev = Event(
+            userid=userid,
+            receiptid=gr.receiptid,
+            description=f"Grocery receipt with {len(df_filtered)} items",
+            type="Grocery",
+            emissions=total_emissions,
+            datetime=datetime.utcnow(),
+        )
+        session.add(ev)
+
+        u = session.get(User, userid)
+        if not u:
+            abort(404, description="User not found")
+        _bump_weekly(u, total_emissions)
+
+        session.commit()
+        return jsonify(df_filtered.to_dict(orient="records"))
+    finally:
+        session.close()
+
 
 @api.get("/users/<int:userid>/search_friend")
 def search_friend(userid):

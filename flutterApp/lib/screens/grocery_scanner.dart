@@ -17,7 +17,7 @@ import '../api/base_url.dart';
 /// ===== TOP-LEVEL: Editable items model =====
 class EditableReceiptItem {
   String name;
-  double quantity;
+  double quantity; // kept for mapping context, not edited anymore
   String? unit;
   Map<String, dynamic> original; // keep original parsed line to rebuild
 
@@ -114,7 +114,7 @@ class _GroceryScannerScreenState extends State<GroceryScannerScreen> {
 
   /// Extract a flat list of items from the parser JSON (works for your sample).
   List<EditableReceiptItem> _extractItems(dynamic receiptJson) {
-    // Case A: top-level LIST (your parser shape)
+    // Case A: top-level LIST (parser shape like your sample)
     if (receiptJson is List) {
       return receiptJson.whereType<Map>().map<EditableReceiptItem>((m) {
         final name =
@@ -164,28 +164,33 @@ class _GroceryScannerScreenState extends State<GroceryScannerScreen> {
     return <EditableReceiptItem>[];
   }
 
-  /// Apply user-edited quantities back into the original parser JSON.
+  /// Apply user-edited **names only** back into the original parser JSON.
   dynamic _applyEditsToReceipt(
-      dynamic receiptJson, List<EditableReceiptItem> edited) {
-    // A) Top-level LIST (your parser shape)
-    if (receiptJson is List) {
-      final List<Map<String, dynamic>> rebuilt = [];
-      for (final e in edited) {
-        final line = Map<String, dynamic>.from(e.original);
-        // Update any quantity-like field present
-        for (final key in ['qty', 'quantity', 'count', 'amount', 'units']) {
-          if (line.containsKey(key)) {
-            line[key] = e.quantity;
-          }
-        }
-        // Ensure at least one canonical quantity field exists
-        line['qty'] = e.quantity;
-        rebuilt.add(line);
+      dynamic receiptJson,
+      List<EditableReceiptItem> edited,
+      ) {
+    Map<String, dynamic> _rebuildLine(EditableReceiptItem e) {
+      final line = Map<String, dynamic>.from(e.original);
+      // Update a name-like field only
+      if (line.containsKey('name')) {
+        line['name'] = e.name;
+      } else if (line.containsKey('description')) {
+        line['description'] = e.name;
+      } else if (line.containsKey('product')) {
+        line['product'] = e.name;
+      } else {
+        line['name'] = e.name;
       }
-      return rebuilt;
+      // DO NOT touch quantity in any form
+      return line;
     }
 
-    // B) Object containing the list under one of these keys
+    // A) Top-level list
+    if (receiptJson is List) {
+      return edited.map(_rebuildLine).toList();
+    }
+
+    // B) Object with list inside
     if (receiptJson is Map) {
       final listKey = [
         'items',
@@ -197,16 +202,7 @@ class _GroceryScannerScreenState extends State<GroceryScannerScreen> {
         'purchases'
       ].firstWhere((k) => receiptJson[k] is List, orElse: () => 'items');
 
-      final List<Map<String, dynamic>> rebuilt = [];
-      for (final e in edited) {
-        final line = Map<String, dynamic>.from(e.original);
-        for (final key in ['qty', 'quantity', 'count', 'amount', 'units']) {
-          if (line.containsKey(key)) line[key] = e.quantity;
-        }
-        if (!line.containsKey('qty')) line['qty'] = e.quantity;
-        rebuilt.add(line);
-      }
-
+      final rebuilt = edited.map(_rebuildLine).toList();
       final out = Map<String, dynamic>.from(receiptJson);
       out[listKey] = rebuilt;
       return out;
@@ -216,7 +212,7 @@ class _GroceryScannerScreenState extends State<GroceryScannerScreen> {
     return receiptJson;
   }
 
-  /// ===== Parse → EDIT → Map → Update UI + Dashboard bump =====
+  /// ===== Parse → EDIT (names only) → Map → Update UI + Dashboard bump =====
   Future<void> _processReceiptBytes({
     required Uint8List bytes,
     required String displayName,
@@ -235,7 +231,7 @@ class _GroceryScannerScreenState extends State<GroceryScannerScreen> {
       final receiptJson = await api.parseReceiptFromBytes(bytes);
       _printLong('receipt_parser result', _prettyJson(receiptJson));
 
-      // 2) EDIT quantities before mapping
+      // 2) EDIT names before mapping
       final List<EditableReceiptItem> initialItems = _extractItems(receiptJson);
 
       final List<EditableReceiptItem>? edited =
@@ -255,7 +251,7 @@ class _GroceryScannerScreenState extends State<GroceryScannerScreen> {
         return;
       }
 
-      // 3) Rebuild JSON with edited quantities
+      // 3) Rebuild JSON with edited names
       final editedReceiptJson = _applyEditsToReceipt(receiptJson, edited);
 
       // 4) Map for THIS user
@@ -302,6 +298,26 @@ class _GroceryScannerScreenState extends State<GroceryScannerScreen> {
       );
     } finally {
       if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  // ---------- Small helper: show a blocking loader while doing a task ----------
+  Future<T> _withBlockingLoader<T>(
+      Future<T> Function() task, {
+        String message = 'Preparing photo…',
+      }) async {
+    if (!mounted) return await task();
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      useRootNavigator: true,
+      builder: (_) => _BlockingLoader(message: message),
+    );
+    try {
+      final result = await task();
+      return result;
+    } finally {
+      if (mounted) Navigator.of(context, rootNavigator: true).pop();
     }
   }
 
@@ -369,8 +385,13 @@ class _GroceryScannerScreenState extends State<GroceryScannerScreen> {
     final name = file.name;
     final Uint8List raw = file.bytes ?? await File(file.path!).readAsBytes();
 
-    final Uint8List bytes = await _normalizeImageBytes(raw);
-    await _showConfirmPage(bytes, name, fromCamera: false);
+    // 🔒 Show loading screen while normalizing & preparing
+    await _withBlockingLoader(() async {
+      final Uint8List bytes = await _normalizeImageBytes(raw);
+      // (Optional tiny delay so the loader is visible even for fast paths)
+      // await Future.delayed(const Duration(milliseconds: 250));
+      await _showConfirmPage(bytes, name, fromCamera: false);
+    }, message: 'Preparing photo…');
   }
 
   // --------- Take a live photo ----------
@@ -387,10 +408,13 @@ class _GroceryScannerScreenState extends State<GroceryScannerScreen> {
 
     if (shot == null) return;
 
-    final bytesRaw = await shot.readAsBytes();
-    final bytes = await _normalizeImageBytes(bytesRaw);
-    final displayName = shot.name.isNotEmpty ? shot.name : 'camera.jpg';
-    await _showConfirmPage(bytes, displayName, fromCamera: true);
+    // 🔒 Show loading screen while reading & normalizing
+    await _withBlockingLoader(() async {
+      final bytesRaw = await shot.readAsBytes();
+      final bytes = await _normalizeImageBytes(bytesRaw);
+      final displayName = shot.name.isNotEmpty ? shot.name : 'camera.jpg';
+      await _showConfirmPage(bytes, displayName, fromCamera: true);
+    }, message: 'Preparing photo…');
   }
 
   @override
@@ -574,7 +598,7 @@ class _GroceryScannerScreenState extends State<GroceryScannerScreen> {
       clipBehavior: Clip.antiAlias,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
       child: InkWell(
-        onTap: () {},
+        onTap: () {}, // could open details later
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
           child: Row(
@@ -638,7 +662,7 @@ class _GroceryScannerScreenState extends State<GroceryScannerScreen> {
   }
 }
 
-/* ===== Expandable summary card ===== */
+/* ===== Expandable summary card (DEFAULT EXPANDED) ===== */
 class _ReceiptSummaryCard extends StatefulWidget {
   final double totalKg;
   final int itemCount;
@@ -655,7 +679,7 @@ class _ReceiptSummaryCard extends StatefulWidget {
 }
 
 class _ReceiptSummaryCardState extends State<_ReceiptSummaryCard> {
-  bool _expanded = false;
+  bool _expanded = true; // ✅ start expanded by default
 
   @override
   Widget build(BuildContext context) {
@@ -846,7 +870,7 @@ class ConfirmReceiptPage extends StatelessWidget {
   }
 }
 
-/* ===== NEW: Edit Receipt Items Page ===== */
+/* ===== Edit Receipt Items Page — NAME ONLY ===== */
 
 class EditReceiptItemsPage extends StatefulWidget {
   final String filename;
@@ -873,27 +897,45 @@ class _EditReceiptItemsPageState extends State<EditReceiptItemsPage> {
     _items = widget.items
         .map((e) => EditableReceiptItem(
       name: e.name,
-      quantity: e.quantity,
+      quantity: e.quantity, // kept but not editable
       unit: e.unit,
       original: e.original,
     ))
         .toList();
   }
 
-  void _inc(int i) {
-    setState(
-            () => _items[i].quantity = (_items[i].quantity + 1).clamp(0, 999999));
-  }
+  Future<void> _editName(int index) async {
+    final controller = TextEditingController(text: _items[index].name);
+    final updated = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Edit item name'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          textInputAction: TextInputAction.done,
+          decoration: const InputDecoration(
+            hintText: 'Enter item name',
+            border: OutlineInputBorder(),
+          ),
+          onSubmitted: (v) => Navigator.of(ctx).pop(v.trim()),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(controller.text.trim()),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
 
-  void _dec(int i) {
-    setState(
-            () => _items[i].quantity = (_items[i].quantity - 1).clamp(0, 999999));
-  }
-
-  void _onQtyChanged(int i, String v) {
-    final parsed = double.tryParse(v.replaceAll(',', '.'));
-    if (parsed == null) return;
-    setState(() => _items[i].quantity = parsed.clamp(0, 999999));
+    if (updated != null && updated.isNotEmpty) {
+      setState(() => _items[index].name = updated);
+    }
   }
 
   void _remove(int i) {
@@ -917,7 +959,7 @@ class _EditReceiptItemsPageState extends State<EditReceiptItemsPage> {
       ),
       body: Column(
         children: [
-          // Optional tiny header with filename + preview
+          // header
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 6),
             child: Row(
@@ -925,8 +967,12 @@ class _EditReceiptItemsPageState extends State<EditReceiptItemsPage> {
                 if (widget.imageBytesPreview != null)
                   ClipRRect(
                     borderRadius: BorderRadius.circular(8),
-                    child: Image.memory(widget.imageBytesPreview!,
-                        width: 48, height: 48, fit: BoxFit.cover),
+                    child: Image.memory(
+                      widget.imageBytesPreview!,
+                      width: 48,
+                      height: 48,
+                      fit: BoxFit.cover,
+                    ),
                   )
                 else
                   const Icon(Icons.receipt_long, size: 36),
@@ -936,8 +982,7 @@ class _EditReceiptItemsPageState extends State<EditReceiptItemsPage> {
                     widget.filename,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: theme.textTheme.bodyMedium
-                        ?.copyWith(fontWeight: FontWeight.w700),
+                    style: theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w700),
                   ),
                 ),
               ],
@@ -947,9 +992,7 @@ class _EditReceiptItemsPageState extends State<EditReceiptItemsPage> {
 
           Expanded(
             child: _items.isEmpty
-                ? const Center(
-              child: Text('No items detected. Go back and retry.'),
-            )
+                ? const Center(child: Text('No items detected. Go back and retry.'))
                 : ListView.separated(
               padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
               itemCount: _items.length,
@@ -958,96 +1001,48 @@ class _EditReceiptItemsPageState extends State<EditReceiptItemsPage> {
                 final it = _items[i];
                 return Card(
                   elevation: 1,
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12)),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                   child: Padding(
-                    padding:
-                    const EdgeInsets.fromLTRB(12, 10, 12, 12),
+                    padding: const EdgeInsets.fromLTRB(12, 12, 8, 12),
                     child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.center,
                       children: [
-                        // Name + unit
+                        // ✅ Name fully expanded
                         Expanded(
                           child: Column(
-                            crossAxisAlignment:
-                            CrossAxisAlignment.start,
+                            crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Text(
                                 it.name,
-                                maxLines: 2,
+                                softWrap: true,
+                                maxLines: 3,
                                 overflow: TextOverflow.ellipsis,
                                 style: const TextStyle(
                                   fontWeight: FontWeight.w700,
-                                  fontSize: 15,
+                                  fontSize: 16,
                                 ),
                               ),
                               const SizedBox(height: 4),
                               Text(
-                                it.unit == null || it.unit!.isEmpty
-                                    ? '—'
-                                    : it.unit!,
-                                style: const TextStyle(
-                                    fontSize: 12,
-                                    color: Colors.black54),
+                                it.unit == null || it.unit!.isEmpty ? '—' : it.unit!,
+                                style: const TextStyle(fontSize: 12, color: Colors.black54),
                               ),
                             ],
                           ),
                         ),
-                        const SizedBox(width: 10),
 
-                        // Quantity controls
-                        Row(
-                          children: [
-                            IconButton(
-                              onPressed: () => _dec(i),
-                              icon: const Icon(
-                                  Icons.remove_circle_outline),
-                            ),
-                            SizedBox(
-                              width: 72,
-                              child: TextFormField(
-                                initialValue:
-                                it.quantity.toStringAsFixed(
-                                  it.quantity ==
-                                      it.quantity
-                                          .roundToDouble()
-                                      ? 0
-                                      : 2,
-                                ),
-                                textAlign: TextAlign.center,
-                                keyboardType:
-                                const TextInputType
-                                    .numberWithOptions(
-                                  signed: false,
-                                  decimal: true,
-                                ),
-                                decoration:
-                                const InputDecoration(
-                                  isDense: true,
-                                  contentPadding:
-                                  EdgeInsets.symmetric(
-                                      vertical: 8,
-                                      horizontal: 8),
-                                  border: OutlineInputBorder(),
-                                ),
-                                onChanged: (v) =>
-                                    _onQtyChanged(i, v),
-                              ),
-                            ),
-                            IconButton(
-                              onPressed: () => _inc(i),
-                              icon: const Icon(
-                                  Icons.add_circle_outline),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(width: 6),
-
-                        // Remove
+                        // ✏️ Edit name button
                         IconButton(
-                          onPressed: () => _remove(i),
+                          tooltip: 'Edit name',
+                          onPressed: () => _editName(i),
+                          icon: const Icon(Icons.edit_outlined),
+                        ),
+
+                        // (Optional) 🗑 Remove line
+                        IconButton(
                           tooltip: 'Remove',
-                          icon:
-                          const Icon(Icons.delete_outline),
+                          onPressed: () => _remove(i),
+                          icon: const Icon(Icons.delete_outline),
                         ),
                       ],
                     ),
@@ -1057,6 +1052,43 @@ class _EditReceiptItemsPageState extends State<EditReceiptItemsPage> {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/* ===== Simple blocking loader dialog ===== */
+class _BlockingLoader extends StatelessWidget {
+  final String message;
+  const _BlockingLoader({required this.message});
+
+  @override
+  Widget build(BuildContext context) {
+    return WillPopScope(
+      onWillPop: () async => false, // prevent back dismiss
+      child: Dialog(
+        elevation: 2,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 20, 20, 18),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const SizedBox(
+                width: 26,
+                height: 26,
+                child: CircularProgressIndicator(strokeWidth: 3),
+              ),
+              const SizedBox(width: 14),
+              Flexible(
+                child: Text(
+                  message,
+                  style: const TextStyle(fontWeight: FontWeight.w600),
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }

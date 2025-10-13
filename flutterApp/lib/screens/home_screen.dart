@@ -6,6 +6,7 @@ import '../widgets/ecopet.dart';
 import '../api/base_url.dart';
 import '../api/pawprint_api.dart';
 import 'package:flutter/services.dart';
+import '../widgets/helper_icon.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -176,6 +177,7 @@ class _HomeScreenState extends State<HomeScreen> {
       appBar: AppBar(
         title: const Text('Home'),
         actions: [
+          HelpIcon(assetPath: 'assets/images/tutorial/home.jpg'),
           PopupMenuButton<String>(
             onSelected: (v) async {
               if (v == 'reset_user') {

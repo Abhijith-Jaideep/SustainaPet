@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../widgets/helper_icon.dart';
 
 // Image normalization
 import 'package:image/image.dart' as img;
@@ -499,8 +500,13 @@ class _GroceryScannerScreenState extends State<GroceryScannerScreen> {
     final theme = Theme.of(context);
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Grocery Receipt Scanner')),
-      body: SafeArea(
+        appBar: AppBar(
+          title: const Text('Grocery Receipt Scanner'),
+          actions: const [
+            HelpIcon(assetPath: 'assets/images/tutorial/receipt_scanner.jpg'),
+          ],
+        ),
+        body: SafeArea(
         top: false,
         child: SingleChildScrollView(
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),

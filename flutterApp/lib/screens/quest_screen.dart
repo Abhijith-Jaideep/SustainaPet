@@ -6,6 +6,7 @@ import 'dart:async';
 
 import '../api/base_url.dart';
 import '../api/pawprint_api.dart';
+import '../widgets/helper_icon.dart';
 
 class QuestScreen extends StatefulWidget {
   const QuestScreen({super.key});
@@ -354,6 +355,7 @@ class _QuestScreenState extends State<QuestScreen> {
             ],
           ),
           actions: [
+            HelpIcon(assetPath: 'assets/images/tutorial/quests.jpg'),
             IconButton(
               onPressed: _assigning ? null : _assignRandom,
               tooltip: 'Shuffle (keep 3)',

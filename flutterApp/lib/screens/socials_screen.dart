@@ -5,7 +5,11 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../api/base_url.dart';
 import '../api/pawprint_api.dart';
-import '../widgets/ecopet.dart'; // PetMood + petMoodFromScore + EcoPet
+import '../widgets/ecopet.dart';
+
+// NOTE: This file expects you have `HelpIconTabAware` in widgets/helper_icon.dart
+// (the tab-aware version that accepts a TabController and assetsByIndex map)
+import '../widgets/helper_icon.dart';
 
 class SocialsScreen extends StatefulWidget {
   const SocialsScreen({super.key});
@@ -188,6 +192,15 @@ class _SocialsScreenState extends State<SocialsScreen>
           ],
         ),
         actions: [
+          // 👇 tab-aware help icon (uses assets for each tab)
+          HelpIconTabAware(
+            controller: _tab,
+            assetsByIndex: const {
+              0: 'assets/images/tutorial/socials.jpg',      // Friends tab walkthrough
+              1: 'assets/images/tutorial/leaderboard.jpg',  // Leaderboard tab walkthrough
+            },
+            fallbackAsset: 'assets/images/tutorial/socials.jpg',
+          ),
           if (_me != null)
             IconButton(
               tooltip: 'Refresh',
@@ -512,7 +525,7 @@ class _SocialsScreenState extends State<SocialsScreen>
                         final savedMag = savedRaw < 0 ? -savedRaw : savedRaw;
                         final net = savedMag - emitted;
 
-                        // 👇 Use the leaderboard row’s OWN pet mood score (0–100)
+                        // Use the leaderboard row’s OWN pet mood score (0–100)
                         final int moodScore = (r.ecopetmood ?? 50);
                         final PetMood mood = petMoodFromScore(
                           moodScore.clamp(0, 100),

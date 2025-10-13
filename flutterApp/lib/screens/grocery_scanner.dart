@@ -43,6 +43,10 @@ class _GroceryScannerScreenState extends State<GroceryScannerScreen> {
   List<ReceiptMapRow> _rows = const [];
   double _totalKg = 0.0; // total across mapped items
 
+  // Inline mood effect label shown on the summary header
+  String? _moodEffectLabel;
+  Color? _moodEffectColor;
+
   late final PawprintApi api;
   final ImagePicker _imagePicker = ImagePicker();
 
@@ -114,7 +118,7 @@ class _GroceryScannerScreenState extends State<GroceryScannerScreen> {
 
   /// Extract a flat list of items from the parser JSON (works for your sample).
   List<EditableReceiptItem> _extractItems(dynamic receiptJson) {
-    // Case A: top-level LIST (parser shape like your sample)
+    // Case A: top-level LIST
     if (receiptJson is List) {
       return receiptJson.whereType<Map>().map<EditableReceiptItem>((m) {
         final name =
@@ -156,7 +160,7 @@ class _GroceryScannerScreenState extends State<GroceryScannerScreen> {
       for (final k in candidates) {
         final v = receiptJson[k];
         if (v is List && v.isNotEmpty && v.first is Map) {
-          return _extractItems(v); // reuse the list branch
+          return _extractItems(v);
         }
       }
     }
@@ -164,14 +168,13 @@ class _GroceryScannerScreenState extends State<GroceryScannerScreen> {
     return <EditableReceiptItem>[];
   }
 
-  /// Apply user-edited **names only** back into the original parser JSON.
+  /// Apply user-edited **names only** back into the original parser JSON (we only delete lines here).
   dynamic _applyEditsToReceipt(
       dynamic receiptJson,
       List<EditableReceiptItem> edited,
       ) {
     Map<String, dynamic> _rebuildLine(EditableReceiptItem e) {
       final line = Map<String, dynamic>.from(e.original);
-      // Update a name-like field only
       if (line.containsKey('name')) {
         line['name'] = e.name;
       } else if (line.containsKey('description')) {
@@ -181,16 +184,13 @@ class _GroceryScannerScreenState extends State<GroceryScannerScreen> {
       } else {
         line['name'] = e.name;
       }
-      // DO NOT touch quantity in any form
       return line;
     }
 
-    // A) Top-level list
     if (receiptJson is List) {
       return edited.map(_rebuildLine).toList();
     }
 
-    // B) Object with list inside
     if (receiptJson is Map) {
       final listKey = [
         'items',
@@ -208,54 +208,10 @@ class _GroceryScannerScreenState extends State<GroceryScannerScreen> {
       return out;
     }
 
-    // Unknown structure: return original
     return receiptJson;
   }
 
-  /// Small modal that plays the scan GIF before showing the breakdown.
-  Future<void> _showScanningAnimation({
-    Duration duration = const Duration(seconds: 2),
-  }) async {
-    if (!mounted) return;
-
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) => Dialog(
-        insetPadding: const EdgeInsets.symmetric(horizontal: 40, vertical: 24),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(20, 20, 20, 18),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              SizedBox(
-                height: 200,
-                child: Image.asset(
-                  'assets/scan.gif',
-                  fit: BoxFit.contain,
-                  gaplessPlayback: true,
-                ),
-              ),
-              const SizedBox(height: 12),
-              const Text(
-                'Analyzing receipt…',
-                style: TextStyle(fontWeight: FontWeight.w700),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-
-    try {
-      await Future.delayed(duration);
-    } finally {
-      if (mounted) Navigator.of(context, rootNavigator: true).pop();
-    }
-  }
-
-  /// ===== Parse → EDIT (names only) → Map → Update UI + Dashboard bump =====
+  /// ===== Parse → DELETE-ONLY review → Map → Update UI + Dashboard bump + Mood reaction (inline) =====
   Future<void> _processReceiptBytes({
     required Uint8List bytes,
     required String displayName,
@@ -268,13 +224,15 @@ class _GroceryScannerScreenState extends State<GroceryScannerScreen> {
         _error = null;
         _rows = const [];
         _totalKg = 0.0;
+        _moodEffectLabel = null;
+        _moodEffectColor = null;
       });
 
       // 1) Parse
       final receiptJson = await api.parseReceiptFromBytes(bytes);
       _printLong('receipt_parser result', _prettyJson(receiptJson));
 
-      // 2) EDIT names before mapping
+      // 2) DELETE-ONLY review before mapping
       final List<EditableReceiptItem> initialItems = _extractItems(receiptJson);
 
       final List<EditableReceiptItem>? edited =
@@ -294,14 +252,14 @@ class _GroceryScannerScreenState extends State<GroceryScannerScreen> {
         return;
       }
 
-      // 3) Rebuild JSON with edited names
+      // 3) Rebuild JSON with deletions applied (names unchanged)
       final editedReceiptJson = _applyEditsToReceipt(receiptJson, edited);
 
       // 4) Map for THIS user
       final mappedRows = await api.mapReceiptForUser(userid, editedReceiptJson);
       if (!mounted) return;
 
-      // 🐾 Show grocery_receipt.gif before list appears
+      // Optional “analyzing” GIF dialog (kept to preserve your flow)
       showDialog(
         context: context,
         barrierDismissible: false,
@@ -325,10 +283,7 @@ class _GroceryScannerScreenState extends State<GroceryScannerScreen> {
                 const SizedBox(height: 14),
                 const Text(
                   'Analyzing your groceries…',
-                  style: TextStyle(
-                    fontWeight: FontWeight.w700,
-                    fontSize: 16,
-                  ),
+                  style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16),
                 ),
               ],
             ),
@@ -336,15 +291,11 @@ class _GroceryScannerScreenState extends State<GroceryScannerScreen> {
         ),
       );
 
-// 🕒 Let the GIF finish naturally (adjust timing if needed)
-      await Future.delayed(const Duration(seconds: 6)); // <-- increase this duration to match your GIF length
+      await Future.delayed(const Duration(seconds: 6));
       if (mounted) {
         Navigator.of(context, rootNavigator: true).pop();
       }
-
-// 🪄 Small fade delay before showing results
       await Future.delayed(const Duration(milliseconds: 400));
-
 
       // 5) Update UI totals (after GIF completes)
       final totalFromReceipt = mappedRows.fold<double>(
@@ -360,35 +311,81 @@ class _GroceryScannerScreenState extends State<GroceryScannerScreen> {
       // 6) Persist a "pending" bump so Dashboard can show it
       final prefs = await SharedPreferences.getInstance();
       await prefs.setDouble('pending_receipt_emissions_$userid', totalFromReceipt);
-      await prefs.setString(
-          'pending_receipt_desc', 'Grocery receipt • $displayName');
-      await prefs.setString(
-          'pending_receipt_ts', DateTime.now().toIso8601String());
+      await prefs.setString('pending_receipt_desc', 'Grocery receipt • $displayName');
+      await prefs.setString('pending_receipt_ts', DateTime.now().toIso8601String());
 
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-              content: Text(
-                  'Added ${totalFromReceipt.toStringAsFixed(2)} kg to Dashboard')),
-        );
-      }
+      // 7) 🔔 Affect EcoPet mood based on *only* High vs Low majority (ignore Medium)
+      await _applyMoodChangeFromRows(userid: userid, rows: mappedRows);
     } on TimeoutException {
       if (!mounted) return;
       setState(() => _error = 'Server timed out. Try again.');
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Server timed out. Try again.')),
-      );
     } catch (e) {
       if (!mounted) return;
       setState(() => _error = 'Failed: $e');
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed: $e')),
-      );
     } finally {
       if (mounted) setState(() => _loading = false);
     }
   }
 
+  // ---------- Apply mood change (+10 / -10 / 0), show effect inline on summary header ----------
+  Future<void> _applyMoodChangeFromRows({
+    required int userid,
+    required List<ReceiptMapRow> rows,
+  }) async {
+    if (rows.isEmpty) return;
+
+    // Count only High and Low. Ignore Medium completely.
+    int high = 0, low = 0;
+    for (final r in rows) {
+      final label = _impactLabel(r).toLowerCase();
+      if (label == 'high') high++;
+      if (label == 'low') low++;
+    }
+
+    // Decide delta from High vs Low only
+    int delta = 0;
+    String majority = 'Tie';
+    if (high > low) {
+      delta = -10;
+      majority = 'High';
+    } else if (low > high) {
+      delta = 10;
+      majority = 'Low';
+    } else {
+      delta = 0; // tie or no high/low at all
+      majority = 'Tie';
+    }
+
+    // If no change, just display that inline
+    if (delta == 0) {
+      setState(() {
+        _moodEffectLabel = 'EcoPet: 0 (Tie)';
+        _moodEffectColor = Colors.blueGrey;
+      });
+      return;
+    }
+
+    try {
+      final dash = await api.getDashboard(userid);
+      final current = (dash.user.ecopetmood).clamp(0, 100);
+      final next = (current + delta).clamp(0, 100);
+      await api.resetUserMood(userid, next);
+
+      if (!mounted) return;
+
+      final verb = delta > 0 ? '+${delta.abs()}' : '-${delta.abs()}';
+      setState(() {
+        _moodEffectLabel = 'EcoPet: $verb ($majority majority)';
+        _moodEffectColor = delta > 0 ? Colors.green.shade700 : Colors.red.shade600;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _moodEffectLabel = 'EcoPet: update failed';
+        _moodEffectColor = Colors.red.shade700;
+      });
+    }
+  }
 
   // ---------- Small helper: show a blocking loader while doing a task ----------
   Future<T> _withBlockingLoader<T>(
@@ -441,9 +438,7 @@ class _GroceryScannerScreenState extends State<GroceryScannerScreen> {
       final userid = await _getCurrentUserId();
       if (userid == null) {
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('No active user. Please log in again.')),
-        );
+        setState(() => _error = 'No active user. Please log in again.');
         return;
       }
       await _processReceiptBytes(
@@ -464,9 +459,7 @@ class _GroceryScannerScreenState extends State<GroceryScannerScreen> {
     if (!mounted) return;
 
     if (result == null || result.files.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No file selected')),
-      );
+      setState(() => _error = 'No file selected');
       return;
     }
 
@@ -474,7 +467,6 @@ class _GroceryScannerScreenState extends State<GroceryScannerScreen> {
     final name = file.name;
     final Uint8List raw = file.bytes ?? await File(file.path!).readAsBytes();
 
-    // 🔒 Show loading screen while normalizing & preparing
     await _withBlockingLoader(() async {
       final Uint8List bytes = await _normalizeImageBytes(raw);
       await _showConfirmPage(bytes, name, fromCamera: false);
@@ -492,10 +484,8 @@ class _GroceryScannerScreenState extends State<GroceryScannerScreen> {
     );
 
     if (!mounted) return;
-
     if (shot == null) return;
 
-    // 🔒 Show loading screen while reading & normalizing
     await _withBlockingLoader(() async {
       final bytesRaw = await shot.readAsBytes();
       final bytes = await _normalizeImageBytes(bytesRaw);
@@ -612,6 +602,8 @@ class _GroceryScannerScreenState extends State<GroceryScannerScreen> {
                 _ReceiptSummaryCard(
                   totalKg: _totalKg,
                   itemCount: _rows.length,
+                  effectLabel: _moodEffectLabel,
+                  effectColor: _moodEffectColor,
                   child: ListView.separated(
                     shrinkWrap: true,
                     physics: const NeverScrollableScrollPhysics(),
@@ -636,7 +628,6 @@ class _GroceryScannerScreenState extends State<GroceryScannerScreen> {
 
     final t = r.totalEmissions ?? 0;
     if (t >= 5) return 'High';
-    if (t >= 1) return 'Medium';
     if (t > 0) return 'Low';
     return 'Unknown';
   }
@@ -645,8 +636,6 @@ class _GroceryScannerScreenState extends State<GroceryScannerScreen> {
     switch (impact.toLowerCase()) {
       case 'high':
         return Colors.red.shade500;
-      case 'medium':
-        return Colors.amber.shade700;
       case 'low':
         return Colors.green.shade600;
       default:
@@ -685,7 +674,7 @@ class _GroceryScannerScreenState extends State<GroceryScannerScreen> {
       clipBehavior: Clip.antiAlias,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
       child: InkWell(
-        onTap: () {}, // could open details later
+        onTap: () {},
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
           child: Row(
@@ -754,11 +743,15 @@ class _ReceiptSummaryCard extends StatefulWidget {
   final double totalKg;
   final int itemCount;
   final Widget child; // the expanded content (per-item list)
+  final String? effectLabel; // inline mood effect label
+  final Color? effectColor;
 
   const _ReceiptSummaryCard({
     required this.totalKg,
     required this.itemCount,
     required this.child,
+    this.effectLabel,
+    this.effectColor,
   });
 
   @override
@@ -766,10 +759,29 @@ class _ReceiptSummaryCard extends StatefulWidget {
 }
 
 class _ReceiptSummaryCardState extends State<_ReceiptSummaryCard> {
-  bool _expanded = true; // ✅ start expanded by default
+  bool _expanded = true; // start expanded by default
 
   @override
   Widget build(BuildContext context) {
+    final pill = (widget.effectLabel == null)
+        ? const SizedBox.shrink()
+        : Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: (widget.effectColor ?? Colors.blueGrey).withOpacity(0.12),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: (widget.effectColor ?? Colors.blueGrey).withOpacity(0.5)),
+      ),
+      child: Text(
+        widget.effectLabel!,
+        style: TextStyle(
+          fontWeight: FontWeight.w700,
+          color: widget.effectColor ?? Colors.blueGrey,
+          fontSize: 12,
+        ),
+      ),
+    );
+
     return Card(
       elevation: 1.5,
       clipBehavior: Clip.antiAlias,
@@ -797,10 +809,18 @@ class _ReceiptSummaryCardState extends State<_ReceiptSummaryCard> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        const Text(
-                          'Total CO₂e',
-                          style:
-                          TextStyle(fontWeight: FontWeight.w700, fontSize: 14),
+                        Row(
+                          children: [
+                            const Text(
+                              'Total CO₂e',
+                              style: TextStyle(
+                                fontWeight: FontWeight.w700,
+                                fontSize: 14,
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            pill, // ← mood effect, inline next to title
+                          ],
                         ),
                         const SizedBox(height: 2),
                         Text(
@@ -981,11 +1001,10 @@ class _EditReceiptItemsPageState extends State<EditReceiptItemsPage> {
   @override
   void initState() {
     super.initState();
-    // Copy items so we can remove locally without mutating the original list
     _items = widget.items
         .map((e) => EditableReceiptItem(
       name: e.name,
-      quantity: e.quantity, // preserved, not editable
+      quantity: e.quantity,
       unit: e.unit,
       original: e.original,
     ))
@@ -1003,7 +1022,9 @@ class _EditReceiptItemsPageState extends State<EditReceiptItemsPage> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Review Items'),
-        actions: [
+        actions: _items.isEmpty
+            ? []
+            : [
           TextButton.icon(
             onPressed: () => Navigator.of(context).pop(_items),
             icon: const Icon(Icons.save, size: 18),
@@ -1011,6 +1032,7 @@ class _EditReceiptItemsPageState extends State<EditReceiptItemsPage> {
           ),
         ],
       ),
+
       body: Column(
         children: [
           // header with tiny preview + filename
@@ -1112,7 +1134,6 @@ class _EditReceiptItemsPageState extends State<EditReceiptItemsPage> {
     );
   }
 }
-
 
 /* ===== Simple blocking loader dialog ===== */
 class _BlockingLoader extends StatelessWidget {

@@ -6,7 +6,6 @@ import 'dart:math' as math;
 import '../api/base_url.dart';
 import '../api/pawprint_api.dart';
 
-// If you already have a Timeframe elsewhere, remove this.
 enum Timeframe { day, week, month }
 
 class DashboardScreen extends StatefulWidget {
@@ -50,17 +49,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Future<_DashData> _load(int uid) async {
-    // 1) Fetch dashboard to get the user weekly counters (as-is)
+    // 1) Weekly counters + user
     final dash = await api.getDashboard(uid);
     final user = dash.user;
 
-    // 2) Fetch monthly data for chart + conversions
+    // 2) Monthly + conversions + events
     final monthly = await api.getMonthlyEmissions(userid: uid);
     final conversions = await api.getConversions();
     final events = await api.getUserEvents(uid, limit: 25);
 
-    // ===== Read & consume "pending" receipt emissions (set by grocery scanner) =====
-    // NOTE: This only affects monthly visuals (chart/conversions), not the weekly cards.
+    // ===== Pending receipt adjustment (monthly visuals only) =====
     final prefs = await SharedPreferences.getInstance();
     final pending = prefs.getDouble('pending_receipt_emissions_$uid') ?? 0.0;
     final pendingDesc = prefs.getString('pending_receipt_desc');
@@ -69,46 +67,55 @@ class _DashboardScreenState extends State<DashboardScreen> {
         ? DateTime.tryParse(pendingTsStr) ?? DateTime.now()
         : DateTime.now();
 
-    // Chart data (monthly weekly buckets; signed values +/-)
+    // Keep existing monthly-signed series (used nowhere for bars now, but keep for net)
     final weeklySorted = [...monthly.weekly]..sort((a, b) => a.week.compareTo(b.week));
-    final weeklyNet = weeklySorted.map((w) => w.kg).toList();
-    final weekLabels = weeklySorted.map((w) => 'W${w.week}').toList();
+    final weeklyNet = weeklySorted.map((w) => w.kg.toDouble()).toList();
 
-    // === TOP CARDS (weekly): display exactly what backend sends ===
-    final emittedWeekly = user.weeklyEmissionsProduced; // e.g., 0.0
-    final savedWeekly = user.weeklyEmissionsSaved; // e.g., -2.55
+    // === TOP CARDS (weekly from backend; saved can be negative) ===
+    double emittedWeekly = user.weeklyEmissionsProduced; // >= 0 (backend)
+    double savedWeekly = user.weeklyEmissionsSaved;       // <= 0 (backend)
 
-    // Conversions use monthly net (absolute magnitude)
+    // Adjust monthly net for pending receipt and inject an event row so UI shows it
     double adjustedNet = monthly.netKg;
-
-    // Apply pending ONLY to monthly visuals
     if (pending.abs() > 1e-9) {
-      if (weeklyNet.isNotEmpty) {
-        weeklyNet[weeklyNet.length - 1] = weeklyNet.last + pending;
-      }
       adjustedNet += pending;
-
       events.insert(
         0,
         EventDto(
           eventid: 0,
           userid: uid,
           userquestid: null,
-          description: pendingDesc ?? 'Grocery receipt',
+          description: _prettifyReceiptDesc(pendingDesc),
           type: 'Receipt',
           emissions: pending,
           datetime: pendingTs,
         ),
       );
-
       await prefs.remove('pending_receipt_emissions_$uid');
       await prefs.remove('pending_receipt_desc');
       await prefs.remove('pending_receipt_ts');
     }
 
+    // If backend weekly numbers are zero or NaN, fallback: compute last 7 days from events
+    if ((emittedWeekly == 0.0 && savedWeekly == 0.0) ||
+        emittedWeekly.isNaN || savedWeekly.isNaN) {
+      final now = DateTime.now();
+      final sevenDaysAgo = now.subtract(const Duration(days: 7));
+      double pos = 0.0;
+      double neg = 0.0;
+      for (final e in events) {
+        if (e.datetime.isAfter(sevenDaysAgo)) {
+          if (e.emissions > 0) pos += e.emissions;
+          if (e.emissions < 0) neg += e.emissions;
+        }
+      }
+      emittedWeekly = pos;
+      savedWeekly = neg; // keep negative
+    }
+
     final totalDisplayKg = adjustedNet.abs();
 
-    // ----- Build conversions (with icons per metric) -----
+    // ----- Conversions -----
     final byName = {for (final c in conversions) c.name.toLowerCase(): c};
     final List<_Metric> metrics = [];
 
@@ -126,7 +133,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       ));
     }
 
-    const kgPerKwh = 0.7; // example factor
+    const kgPerKwh = 0.7;
     metrics.add(_Metric(
       id: 9991,
       name: 'Electricity',
@@ -181,17 +188,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
       ));
     }
 
-    // ====== Compute Daily Streak (consecutive days with ≥1 event) ======
+    // ====== Streak ======
     final nowLocal = DateTime.now();
     final today = DateTime(nowLocal.year, nowLocal.month, nowLocal.day);
-
-    // Put all unique local dates with events into a Set<String> yyyy-MM-dd
     final Set<String> eventDays = {
       for (final e in events)
         _fmtDate(DateTime(e.datetime.year, e.datetime.month, e.datetime.day))
     };
 
-    // Count consecutive days ending at today (if today has none, streak ends at yesterday)
     int streak = 0;
     DateTime cursor =
     eventDays.contains(_fmtDate(today)) ? today : today.subtract(const Duration(days: 1));
@@ -201,13 +205,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
       cursor = cursor.subtract(const Duration(days: 1));
     }
 
-    // ====== Reward at 7, 14, 21... days (one-time per multiple) ======
     int carbonPoints = prefs.getInt('carbon_points_$uid') ?? 0;
     int lastRewardMultiple = prefs.getInt('streak_last_multiple_$uid') ?? 0;
 
-    final currentMultiple = streak ~/ 7; // 0,1,2,...
+    final currentMultiple = streak ~/ 7;
     if (currentMultiple > lastRewardMultiple && currentMultiple > 0) {
-      // award 100 points per new multiple crossed (usually +100 at 7, 14, 21...)
       final earned = 100 * (currentMultiple - lastRewardMultiple);
       carbonPoints += earned;
       await prefs.setInt('carbon_points_$uid', carbonPoints);
@@ -226,12 +228,39 @@ class _DashboardScreenState extends State<DashboardScreen> {
       }
     }
 
+    // ====== Build weekly charts FROM EVENTS for the CURRENT MONTH ======
+    final now = DateTime.now();
+    final monthStart = DateTime(now.year, now.month, 1);
+    final monthEnd = (now.month == 12)
+        ? DateTime(now.year + 1, 1, 1)
+        : DateTime(now.year, now.month + 1, 1);
+
+    // 5 buckets (W1..W5). Some months only fill 4; that’s fine.
+    final List<double> weeklyEmitted = List.filled(5, 0.0);
+    final List<double> weeklySaved = List.filled(5, 0.0);
+
+    for (final e in events) {
+      if (!e.datetime.isBefore(monthStart) && e.datetime.isBefore(monthEnd)) {
+        final day = e.datetime.day; // 1..31
+        final idx = ((day - 1) / 7).floor().clamp(0, 4); // 0..4
+        if (e.emissions > 0) {
+          weeklyEmitted[idx] += e.emissions;
+        } else if (e.emissions < 0) {
+          weeklySaved[idx] += e.emissions.abs(); // store magnitude for green chart
+        }
+      }
+    }
+
+    final List<String> weekLabels = List.generate(5, (i) => 'W${i + 1}');
+
     return _DashData(
-      emittedKg: emittedWeekly, // weekly_emissions_produced (as-is)
-      savedKg: savedWeekly, // weekly_emissions_saved (as-is; may be negative)
-      totalDisplayKg: totalDisplayKg, // abs(monthly net) for conversions
-      weeklyNet: weeklyNet, // monthly chart (with pending bump if any)
-      weekLabels: weekLabels,
+      emittedKg: emittedWeekly,
+      savedKg: savedWeekly,
+      totalDisplayKg: totalDisplayKg,
+      weeklyNet: weeklyNet,                // kept for completeness
+      weeklyEmitted: weeklyEmitted,        // NEW: from events
+      weeklySaved: weeklySaved,            // NEW: from events (magnitudes)
+      weekLabels: weekLabels,              // W1..W5
       metrics: metrics,
       events: events,
       streakDays: streak,
@@ -259,7 +288,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   children: [
                     const Icon(Icons.error_outline, color: Colors.red, size: 40),
                     const SizedBox(height: 10),
-                    Text('Failed to load dashboard:\n${snap.error}', textAlign: TextAlign.center),
+                    Text('Failed to load dashboard:\n${snap.error}',
+                        textAlign: TextAlign.center),
                     const SizedBox(height: 12),
                     OutlinedButton(
                       onPressed: () {
@@ -277,98 +307,25 @@ class _DashboardScreenState extends State<DashboardScreen> {
             final data = snap.data!;
             final isNarrow = MediaQuery.of(context).size.width < 380;
 
-            // Build the two top cards once so we can reuse for Row/Column layout.
+            // Top cards (weekly)
             final emittedCard = Expanded(
               child: _CardShell(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const _SectionHeader(
-                      icon: Icons.arrow_upward_rounded,
-                      label: 'Carbon Emitted',
-                    ),
-                    const SizedBox(height: 8),
-                    SizedBox(
-                      width: double.infinity,
-                      child: FittedBox(
-                        alignment: Alignment.bottomLeft,
-                        fit: BoxFit.scaleDown,
-                        child: Row(
-                          crossAxisAlignment: CrossAxisAlignment.end,
-                          children: [
-                            Text(
-                              data.emittedKg.toStringAsFixed(1),
-                              style: const TextStyle(
-                                fontSize: 34,
-                                fontWeight: FontWeight.w800,
-                                color: Color(0xFFD64545),
-                              ),
-                            ),
-                            const SizedBox(width: 6),
-                            const Padding(
-                              padding: EdgeInsets.only(bottom: 4),
-                              child: Text(
-                                'kg',
-                                style: TextStyle(
-                                  fontSize: 16,
-                                  color: Colors.black54,
-                                  fontWeight: FontWeight.w700,
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ],
+                child: _TopValueCard(
+                  icon: Icons.arrow_upward_rounded,
+                  label: 'Carbon Emitted',
+                  value: data.emittedKg,
+                  color: const Color(0xFFD64545),
                 ),
               ),
             );
 
             final savedCard = Expanded(
               child: _CardShell(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const _SectionHeader(
-                      icon: Icons.arrow_downward_rounded,
-                      label: 'Carbon Saved',
-                    ),
-                    const SizedBox(height: 8),
-                    SizedBox(
-                      width: double.infinity,
-                      child: FittedBox(
-                        alignment: Alignment.bottomLeft,
-                        fit: BoxFit.scaleDown,
-                        child: Row(
-                          crossAxisAlignment: CrossAxisAlignment.end,
-                          children: [
-                            // Show as positive for nicer UI, underlying value may be negative.
-                            Text(
-                              data.savedKg.abs().toStringAsFixed(1),
-                              style: const TextStyle(
-                                fontSize: 34,
-                                fontWeight: FontWeight.w800,
-                                color: Color(0xFF2E7D32),
-                              ),
-                            ),
-                            const SizedBox(width: 6),
-                            const Padding(
-                              padding: EdgeInsets.only(bottom: 4),
-                              child: Text(
-                                'kg',
-                                style: TextStyle(
-                                  fontSize: 16,
-                                  color: Colors.black54,
-                                  fontWeight: FontWeight.w700,
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ],
+                child: _TopValueCard(
+                  icon: Icons.arrow_downward_rounded,
+                  label: 'Carbon Saved',
+                  value: data.savedKg.abs(),
+                  color: const Color(0xFF2E7D32),
                 ),
               ),
             );
@@ -378,39 +335,52 @@ class _DashboardScreenState extends State<DashboardScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  // === NEW: 7-segment Streak bar at the top ===
                   _StreakBarCard(streakDays: data.streakDays, carbonPoints: data.carbonPoints),
                   const SizedBox(height: 12),
 
-                  // === Top row: Carbon Emitted + Carbon Saved (WEEKLY) ===
                   if (isNarrow) ...[
                     emittedCard,
                     const SizedBox(height: 12),
                     savedCard,
                   ] else
-                    Row(
-                      children: [
-                        emittedCard,
-                        const SizedBox(width: 12),
-                        savedCard,
-                      ],
-                    ),
+                    Row(children: [emittedCard, const SizedBox(width: 12), savedCard]),
 
                   const SizedBox(height: 16),
 
-                  // === Compact CO₂ Conversions Grid (MONTHLY) ===
+                  // Conversions
                   _CardShell(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         const _SectionHeader(
-                          icon: Icons.swap_horiz_rounded,
-                          label: 'CO₂ Conversions (Monthly)',
-                        ),
+                            icon: Icons.swap_horiz_rounded, label: 'CO₂ Conversions (Monthly)'),
                         const SizedBox(height: 8),
-                        _ConversionGrid(
-                          emissionsKg: data.totalDisplayKg,
-                          metrics: data.metrics,
+                        _ConversionGrid(emissionsKg: data.totalDisplayKg, metrics: data.metrics),
+                      ],
+                    ),
+                  ),
+
+                  const SizedBox(height: 16),
+
+                  // Separate charts (from EVENTS; with more spacing & clear axes)
+                  _CardShell(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const _SectionHeader(icon: Icons.bar_chart, label: 'Carbon Emitted (Weekly)'),
+                        const SizedBox(height: 8),
+                        MonthlyBarChart(
+                          values: data.weeklyEmitted,        // red bars
+                          labels: data.weekLabels,
+                          barColor: const Color(0xFFD64545),
+                        ),
+                        const SizedBox(height: 28),
+                        const _SectionHeader(icon: Icons.bar_chart, label: 'Carbon Saved (Weekly)'),
+                        const SizedBox(height: 8),
+                        MonthlyBarChart(
+                          values: data.weeklySaved,          // green bars (magnitudes)
+                          labels: data.weekLabels,
+                          barColor: const Color(0xFF2E7D32),
                         ),
                       ],
                     ),
@@ -418,33 +388,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
                   const SizedBox(height: 16),
 
-                  // === Monthly Emissions Chart (with axes) ===
-                  _CardShell(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const _SectionHeader(
-                          icon: Icons.bar_chart_rounded,
-                          label: 'Monthly CO₂ Emissions',
-                        ),
-                        const SizedBox(height: 8),
-                        MonthlyEmissionsChart(
-                          values: data.weeklyNet, // +/- weekly kg
-                          labels: data.weekLabels, // ["W1","W2",...]
-                          yTicks: 4,
-                        ),
-                        const SizedBox(height: 6),
-                        const Text(
-                          'Weekly net CO₂e (kg). Red = emitted, Green = saved.',
-                          style: TextStyle(color: Colors.black54),
-                        ),
-                      ],
-                    ),
-                  ),
-
-                  const SizedBox(height: 16),
-
-                  // === Events table ===
+                  // Events
                   _CardShell(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -468,17 +412,18 @@ class _DashboardScreenState extends State<DashboardScreen> {
 /* ====================== View Models / UI Bits ====================== */
 
 class _DashData {
-  // weekly, shown as-is in top cards
-  final double emittedKg; // weekly_emissions_produced
-  final double savedKg; // weekly_emissions_saved (may be negative)
-  // monthly visuals
-  final double totalDisplayKg; // abs(monthly net) for conversions
-  final List<double> weeklyNet; // monthly weekly buckets (signed)
-  final List<String> weekLabels;
+  final double emittedKg;           // weekly (backend; may fallback to last 7 days)
+  final double savedKg;             // weekly (backend; negative; displayed abs)
+  final double totalDisplayKg;      // monthly net magnitude for conversions
+
+  final List<double> weeklyNet;     // (kept) signed monthly weekly buckets (unused for bars now)
+  final List<double> weeklyEmitted; // NEW: weekly bars from events (current month)
+  final List<double> weeklySaved;   // NEW: weekly bars (magnitudes) from events
+  final List<String> weekLabels;    // W1..W5
+
   final List<_Metric> metrics;
   final List<EventDto> events;
 
-  // NEW: streak + points
   final int streakDays;
   final int carbonPoints;
 
@@ -487,6 +432,8 @@ class _DashData {
     required this.savedKg,
     required this.totalDisplayKg,
     required this.weeklyNet,
+    required this.weeklyEmitted,
+    required this.weeklySaved,
     required this.weekLabels,
     required this.metrics,
     required this.events,
@@ -532,17 +479,14 @@ class _SectionHeader extends StatelessWidget {
         const SizedBox(width: 8),
         Text(
           label,
-          style: const TextStyle(
-            fontSize: 16,
-            fontWeight: FontWeight.w800,
-          ),
+          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
         ),
       ],
     );
   }
 }
 
-/* ====================== NEW: 7-Segment Streak Bar Card ====================== */
+/* ====================== Streak Bar ====================== */
 
 class _StreakBarCard extends StatelessWidget {
   final int streakDays;
@@ -553,28 +497,23 @@ class _StreakBarCard extends StatelessWidget {
   Widget build(BuildContext context) {
     const cycle = 7;
     final inCycle = streakDays == 0 ? 0 : (streakDays % cycle);
-    final filled = inCycle == 0 && streakDays > 0 ? cycle : inCycle; // full at 7,14,...
+    final filled = inCycle == 0 && streakDays > 0 ? cycle : inCycle;
     final remaining = (filled == cycle) ? 0 : (cycle - filled);
 
     return _CardShell(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Header + points pill
           Row(
             children: [
               const Icon(Icons.local_fire_department, color: Colors.deepOrange),
               const SizedBox(width: 8),
-              const Text(
-                'Daily Streak',
-                style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16),
-              ),
+              const Text('Daily Streak',
+                  style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16)),
               const Spacer()
             ],
           ),
           const SizedBox(height: 12),
-
-          // 7 segments
           SizedBox(
             height: 28,
             child: Row(
@@ -601,10 +540,7 @@ class _StreakBarCard extends StatelessWidget {
               }),
             ),
           ),
-
           const SizedBox(height: 10),
-
-          // Reward chip + helper text
           Row(
             children: [
               Container(
@@ -640,16 +576,12 @@ class _StreakBarCard extends StatelessWidget {
                 filled == 7
                     ? 'Great job! 🎉'
                     : (remaining == 1 ? '1 day to next reward' : '$remaining days to next reward'),
-                style: const TextStyle(fontSize: 12, color: Colors.black87, fontWeight: FontWeight.w600),
+                style: const TextStyle(
+                    fontSize: 12, color: Colors.black87, fontWeight: FontWeight.w600),
               ),
             ],
           ),
-
           const SizedBox(height: 6),
-          Text(
-            'Current streak: $streakDays day${streakDays == 1 ? '' : 's'} (log 1 action/day)',
-            style: const TextStyle(fontSize: 12, color: Colors.black54),
-          ),
         ],
       ),
     );
@@ -671,12 +603,6 @@ class _EventsTable extends StatelessWidget {
       );
     }
 
-    final emitted = events.where((e) => e.emissions > 0).toList();
-    final saved = events.where((e) => e.emissions <= 0).toList();
-
-    final totalEmitted = emitted.fold<double>(0, (sum, e) => sum + e.emissions);
-    final totalSaved = saved.fold<double>(0, (sum, e) => sum + e.emissions.abs());
-
     return ClipRRect(
       borderRadius: BorderRadius.circular(12),
       child: Container(
@@ -686,88 +612,24 @@ class _EventsTable extends StatelessWidget {
         ),
         child: Column(
           children: [
-            // Header
             Container(
               color: const Color(0xFFF7F9FA),
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
               child: const Row(
                 children: [
-                  Expanded(
-                    flex: 6,
-                    child: Text(
-                      'Description',
-                      style: TextStyle(fontWeight: FontWeight.w700),
-                    ),
-                  ),
-                  Expanded(
-                    flex: 3,
-                    child: Text(
-                      'CO₂e (kg)',
-                      style: TextStyle(fontWeight: FontWeight.w700),
-                    ),
-                  ),
-                  Expanded(
-                    flex: 4,
-                    child: Text(
-                      'Date',
-                      style: TextStyle(fontWeight: FontWeight.w700),
-                    ),
-                  ),
+                  Expanded(flex: 6, child: Text('Description', style: TextStyle(fontWeight: FontWeight.w700))),
+                  Expanded(flex: 3, child: Text('CO₂e (kg)', style: TextStyle(fontWeight: FontWeight.w700))),
+                  Expanded(flex: 4, child: Text('Date', style: TextStyle(fontWeight: FontWeight.w700))),
                 ],
               ),
             ),
-
-            // Summary Row
-            Container(
-              color: const Color(0xFFFFC107),
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              child: Row(
-                children: [
-                  const Expanded(
-                    flex: 6,
-                    child: Text(
-                      'Summary',
-                      style: TextStyle(fontWeight: FontWeight.w600),
-                    ),
-                  ),
-                  Expanded(
-                    flex: 3,
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'Emitted: ${totalEmitted.toStringAsFixed(2)} kg',
-                          style: const TextStyle(
-                            color: Color(0xFFD64545),
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                        Text(
-                          'Saved: ${totalSaved.toStringAsFixed(2)} kg',
-                          style: const TextStyle(
-                            color: Color(0xFF2E7D32),
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const Expanded(flex: 4, child: SizedBox()),
-                ],
-              ),
-            ),
-
-            // Rows
             ...events.map((e) {
               final kg = e.emissions;
               final kgStr = kg.toStringAsFixed(3);
               final date = _fmtDate(e.datetime);
-
               return Container(
                 decoration: const BoxDecoration(
-                  border: Border(
-                    top: BorderSide(color: Color(0xFFE6E8EC), width: 1),
-                  ),
+                  border: Border(top: BorderSide(color: Color(0xFFE6E8EC), width: 1)),
                 ),
                 padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                 child: Row(
@@ -779,28 +641,22 @@ class _EventsTable extends StatelessWidget {
                       child: Row(
                         children: [
                           Icon(
-                            kg <= 0 ? Icons.south_rounded : Icons.north_rounded,
+                            kg >= 0 ? Icons.north_rounded : Icons.south_rounded,
                             size: 16,
-                            color: kg <= 0 ? const Color(0xFF2E7D32) : const Color(0xFFD64545),
+                            color: kg >= 0 ? const Color(0xFFD64545) : const Color(0xFF2E7D32),
                           ),
                           const SizedBox(width: 4),
                           Text(
                             kgStr,
                             style: TextStyle(
                               fontWeight: FontWeight.w600,
-                              color: kg <= 0 ? const Color(0xFF2E7D32) : const Color(0xFFD64545),
+                              color: kg >= 0 ? const Color(0xFFD64545) : const Color(0xFF2E7D32),
                             ),
                           ),
                         ],
                       ),
                     ),
-                    Expanded(
-                      flex: 4,
-                      child: Text(
-                        date,
-                        textAlign: TextAlign.right,
-                      ),
-                    ),
+                    Expanded(flex: 4, child: Text(date, textAlign: TextAlign.right)),
                   ],
                 ),
               );
@@ -811,9 +667,7 @@ class _EventsTable extends StatelessWidget {
     );
   }
 
-  String _fmtDate(DateTime dt) {
-    return '${dt.year}-${_pad2(dt.month)}-${_pad2(dt.day)}';
-  }
+  String _fmtDate(DateTime dt) => '${dt.year}-${_pad2(dt.month)}-${_pad2(dt.day)}';
 }
 
 /* ====================== Conversions ====================== */
@@ -824,10 +678,10 @@ class _Metric {
   final int id;
   final String name;
   final String description;
-  final double? emissionsPerX; // negative in DB for savings; use abs() for math
+  final double? emissionsPerX;
   final _CalcType calculation;
   final String unitLabel;
-  final IconData icon; // metric-specific icon
+  final IconData icon;
   final double Function(double emissionsKg, _Metric metric)? overrideCompute;
   final String Function(double value) sentence;
   final Timeframe timeframe;
@@ -842,7 +696,7 @@ class _Metric {
     required this.icon,
     required this.sentence,
     this.overrideCompute,
-    this.timeframe = Timeframe.day, // default
+    this.timeframe = Timeframe.day,
   });
 
   double? compute(double userEmissionsKg) {
@@ -858,15 +712,12 @@ class _Metric {
   }
 }
 
-/* === Compact Conversions Grid with metric-specific icons === */
+/* === Compact Conversions Grid === */
 class _ConversionGrid extends StatelessWidget {
   final double emissionsKg;
   final List<_Metric> metrics;
 
-  const _ConversionGrid({
-    required this.emissionsKg,
-    required this.metrics,
-  });
+  const _ConversionGrid({required this.emissionsKg, required this.metrics});
 
   Color _iconBgFor(IconData icon) {
     if (icon == Icons.park_rounded) return const Color(0xFFE8F5E9);
@@ -888,11 +739,9 @@ class _ConversionGrid extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // 2 columns on phones, 3 on wider screens
     final width = MediaQuery.of(context).size.width;
     final cols = width > 760 ? 3 : 2;
-
-    final tileHeight = width > 760 ? 160.0 : 190.0; // taller tiles so text never clips
+    final tileHeight = width > 760 ? 160.0 : 190.0;
 
     return GridView.builder(
       physics: const NeverScrollableScrollPhysics(),
@@ -927,10 +776,7 @@ class _ConversionGrid extends StatelessWidget {
                 Container(
                   width: 32,
                   height: 32,
-                  decoration: BoxDecoration(
-                    color: bg,
-                    shape: BoxShape.circle,
-                  ),
+                  decoration: BoxDecoration(color: bg, shape: BoxShape.circle),
                   child: Icon(m.icon, color: fg, size: 18),
                 ),
                 const SizedBox(width: 10),
@@ -945,9 +791,7 @@ class _ConversionGrid extends StatelessWidget {
                           maxLines: 2,
                           softWrap: true,
                           style: const TextStyle(
-                            fontWeight: FontWeight.w700,
-                            fontSize: 13,
-                          ),
+                              fontWeight: FontWeight.w700, fontSize: 13),
                         ),
                       ),
                       const SizedBox(height: 4),
@@ -956,10 +800,7 @@ class _ConversionGrid extends StatelessWidget {
                           sentence,
                           softWrap: true,
                           style: const TextStyle(
-                            fontSize: 12,
-                            color: Colors.black87,
-                            height: 1.2,
-                          ),
+                              fontSize: 12, color: Colors.black87, height: 1.2),
                         ),
                       ),
                     ],
@@ -974,201 +815,124 @@ class _ConversionGrid extends StatelessWidget {
   }
 }
 
-/* ====================== Proper Monthly Emissions Chart ====================== */
+/* ====================== MonthlyBarChart (separate) ====================== */
 
-class MonthlyEmissionsChart extends StatelessWidget {
-  final List<double> values; // e.g., [-1.2, 0.8, -0.3, 1.0, 0.0]
-  final List<String> labels; // e.g., ["W1","W2","W3","W4","W5"]
-  final int yTicks;
+class MonthlyBarChart extends StatelessWidget {
+  final List<double> values; // positive-only for each chart
+  final List<String> labels;
+  final Color barColor;
 
-  const MonthlyEmissionsChart({
+  const MonthlyBarChart({
     super.key,
     required this.values,
     required this.labels,
-    this.yTicks = 4,
+    required this.barColor,
   });
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        AspectRatio(
-          aspectRatio: 16 / 9,
-          child: CustomPaint(
-            painter: _MonthlyBarPainter(
-              values: values,
-              labels: labels,
-              maxAbsY: _niceMaxAbs(values),
-              yTicks: yTicks,
-              axisColor: Colors.grey.shade400,
-              gridColor: Colors.grey.shade300,
-              posBarColor: const Color(0xFFE74C3C),
-              negBarColor: const Color(0xFF2E7D32),
-              labelStyle: const TextStyle(fontSize: 11, color: Colors.black87),
-            ),
-          ),
-        ),
-        const SizedBox(height: 6),
-        const Text(
-          'Weeks',
-          textAlign: TextAlign.center,
-          style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
-        ),
-      ],
+    return AspectRatio(
+      aspectRatio: 16 / 9,
+      child: CustomPaint(
+        painter: _BarPainter(values: values, labels: labels, color: barColor),
+      ),
     );
   }
 }
 
-double _niceMaxAbs(List<double> vals) {
-  if (vals.isEmpty) return 10.0;
-  final maxAbs = vals.map((v) => v.abs()).fold<double>(0.0, (p, e) => e > p ? e : p);
-  if (maxAbs == 0) return 10.0;
-  double nice = 1.0;
-  while (nice < maxAbs) nice *= 2;
-  return nice;
-}
-
-class _MonthlyBarPainter extends CustomPainter {
+class _BarPainter extends CustomPainter {
   final List<double> values;
   final List<String> labels;
-  final double maxAbsY;
-  final int yTicks;
+  final Color color;
+  _BarPainter({required this.values, required this.labels, required this.color});
 
-  final Color axisColor;
-  final Color gridColor;
-  final Color posBarColor;
-  final Color negBarColor;
-  final TextStyle labelStyle;
-
-  _MonthlyBarPainter({
-    required this.values,
-    required this.labels,
-    required this.maxAbsY,
-    required this.yTicks,
-    required this.axisColor,
-    required this.gridColor,
-    required this.posBarColor,
-    required this.negBarColor,
-    required this.labelStyle,
-  });
-
-  final double _leftPad = 48;
-  final double _rightPad = 12;
-  final double _topPad = 16;
-  final double _bottomPad = 36;
+  final double _leftPad = 72; // extra spacing to prevent crowding
+  final double _rightPad = 16;
+  final double _topPad = 18;
+  final double _bottomPad = 48; // more space for x labels
 
   @override
   void paint(Canvas canvas, Size size) {
-    final chartRect = Rect.fromLTWH(
+    final rect = Rect.fromLTWH(
       _leftPad,
       _topPad,
       size.width - _leftPad - _rightPad,
       size.height - _topPad - _bottomPad,
     );
 
-    final paintGrid = Paint()
-      ..color = gridColor
-      ..strokeWidth = 1;
+    // Axis/grid
+    final axisPaint = Paint()..color = Colors.grey.shade400..strokeWidth = 1.2;
+    final gridPaint = Paint()..color = Colors.grey.shade300..strokeWidth = 1;
 
-    final paintAxis = Paint()
-      ..color = axisColor
-      ..strokeWidth = 1.2;
+    // Scales
+    final maxVal = (values.isEmpty ? 10.0 : values.reduce(math.max));
+    final maxY = maxVal <= 0 ? 10.0 : maxVal * 1.25;
+    const yTicks = 4;
 
-    final tp = (String s) => TextPainter(
-      text: TextSpan(text: s, style: labelStyle),
+    double yFor(double v) => rect.bottom - (v / maxY) * rect.height;
+
+    // Grid + labels
+    TextPainter _tp(String s) => TextPainter(
+      text: TextSpan(text: s, style: const TextStyle(fontSize: 11, color: Colors.black87)),
       textDirection: TextDirection.ltr,
-      maxLines: 1,
     );
 
-    // Y grid + labels (+max ... -max)
     for (int i = 0; i <= yTicks; i++) {
-      final t = i / yTicks; // 0..1
-      final yValue = maxAbsY - (2 * maxAbsY) * t; // +max..-max
-      final y = chartRect.top + t * chartRect.height;
+      final t = i / yTicks;
+      final y = rect.bottom - t * rect.height;
+      canvas.drawLine(Offset(rect.left, y), Offset(rect.right, y), gridPaint);
 
-      canvas.drawLine(Offset(chartRect.left, y), Offset(chartRect.right, y), paintGrid);
-
-      final lbl = yValue.toStringAsFixed(1);
-      final tpLbl = tp(lbl)..layout();
-      tpLbl.paint(canvas, Offset(_leftPad - 6 - tpLbl.width, y - tpLbl.height / 2));
+      final lbl = (maxY * t).toStringAsFixed(1);
+      final tp = _tp(lbl)..layout();
+      tp.paint(canvas, Offset(_leftPad - tp.width - 12, y - tp.height / 2));
     }
 
-    // Y-axis title
-    final yTitle = TextPainter(
-      text: TextSpan(
+    // Axes
+    canvas.drawLine(rect.bottomLeft, rect.bottomRight, axisPaint);
+    canvas.drawLine(rect.bottomLeft, rect.topLeft, axisPaint);
+
+    // Bars
+    if (values.isNotEmpty) {
+      final count = values.length;
+      final slot = rect.width / count;
+      final barW = slot * 0.6;
+
+      for (int i = 0; i < count; i++) {
+        final v = values[i].clamp(0.0, maxY).toDouble();
+        final y = yFor(v);
+        final xc = rect.left + (i + 0.5) * slot;
+
+        final r = Rect.fromLTWH(xc - barW / 2, y, barW, rect.bottom - y);
+        canvas.drawRRect(
+          RRect.fromRectAndRadius(r, const Radius.circular(6)),
+          Paint()..color = color,
+        );
+
+        if (i < labels.length) {
+          final tp = _tp(labels[i])..layout(maxWidth: slot);
+          tp.paint(canvas, Offset(xc - tp.width / 2, rect.bottom + 8));
+        }
+      }
+    }
+
+    // Y axis title, pushed further left so it doesn't clash
+    final yLab = TextPainter(
+      text: const TextSpan(
         text: 'CO₂e (kg)',
-        style: labelStyle.copyWith(fontWeight: FontWeight.w600),
+        style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Colors.black87),
       ),
       textDirection: TextDirection.ltr,
     )..layout();
     canvas.save();
-    canvas.translate(12, chartRect.center.dy + yTitle.width / 2);
+    canvas.translate(22, rect.center.dy + yLab.width / 2);
     canvas.rotate(-math.pi / 2);
-    yTitle.paint(canvas, Offset.zero);
+    yLab.paint(canvas, Offset.zero);
     canvas.restore();
-
-    // Axes
-    canvas.drawLine(chartRect.topLeft, chartRect.bottomLeft, paintAxis);
-    canvas.drawLine(chartRect.bottomLeft, chartRect.bottomRight, paintAxis);
-
-    double yFor(double value) {
-      final t = (maxAbsY - value) / (2 * maxAbsY); // 0..1
-      return chartRect.top + t * chartRect.height;
-    }
-
-    // Zero line
-    final zeroY = yFor(0);
-    if (zeroY >= chartRect.top && zeroY <= chartRect.bottom) {
-      final zeroPaint = Paint()
-        ..color = axisColor.withOpacity(0.9)
-        ..strokeWidth = 1.2;
-      canvas.drawLine(Offset(chartRect.left, zeroY), Offset(chartRect.right, zeroY), zeroPaint);
-    }
-
-    // Bars
-    if (values.isEmpty) return;
-    final count = values.length;
-    final barSlot = chartRect.width / count;
-    final barWidth = barSlot * 0.6;
-
-    for (int i = 0; i < count; i++) {
-      final v = values[i].clamp(-maxAbsY, maxAbsY);
-      final isPos = v >= 0;
-      final color = isPos ? posBarColor : negBarColor;
-
-      final xCenter = chartRect.left + (i + 0.5) * barSlot;
-      final xLeft = xCenter - barWidth / 2;
-      final yValue = yFor(v);
-      final yZero = yFor(0);
-
-      final rect = Rect.fromLTRB(
-        xLeft,
-        isPos ? yValue : yZero,
-        xLeft + barWidth,
-        isPos ? yZero : yValue,
-      );
-
-      final rPaint = Paint()..color = color;
-      final rR = RRect.fromRectAndRadius(rect, const Radius.circular(6));
-      canvas.drawRRect(rR, rPaint);
-
-      if (i < labels.length) {
-        final t = TextPainter(
-          text: TextSpan(text: labels[i], style: labelStyle),
-          textDirection: TextDirection.ltr,
-        )..layout(maxWidth: barSlot);
-        t.paint(canvas, Offset(xCenter - t.width / 2, chartRect.bottom + 6));
-      }
-    }
   }
 
   @override
-  bool shouldRepaint(covariant _MonthlyBarPainter oldDelegate) {
-    return values != oldDelegate.values ||
-        labels != oldDelegate.labels ||
-        maxAbsY != oldDelegate.maxAbsY ||
-        yTicks != oldDelegate.yTicks;
+  bool shouldRepaint(covariant _BarPainter old) {
+    return values != old.values || labels != old.labels || color != old.color;
   }
 }
 
@@ -1183,15 +947,75 @@ String _formatNumber(double v) {
 }
 
 String _pad2(int n) => n < 10 ? '0$n' : '$n';
-String _fmtDateTime(DateTime dt) {
-  final d = dt.toLocal();
-  final y = d.year;
-  final m = _pad2(d.month);
-  final day = _pad2(d.day);
-  final hh = _pad2(d.hour);
-  final mm = _pad2(d.minute);
-  return '$y-$m-$day $hh:$mm';
+String _fmtDate(DateTime dt) => '${dt.year}-${_pad2(dt.month)}-${_pad2(dt.day)}';
+
+// Make receipt filename pretty if that’s what the scanner gave us.
+String _prettifyReceiptDesc(String? raw) {
+  if (raw == null || raw.trim().isEmpty) return 'Grocery receipt';
+  var s = raw.trim();
+
+  final parts = s.split(RegExp(r'[\/\\]+'));
+  s = parts.isNotEmpty ? parts.last : s;
+
+  s = s.replaceAll(RegExp(r'\.(png|jpg|jpeg|pdf|heic|webp)$', caseSensitive: false), '');
+  s = s.replaceAll(RegExp(r'[_\-]+'), ' ').replaceAll(RegExp(r'\s+'), ' ').trim();
+
+  if (s.isNotEmpty) s = s[0].toUpperCase() + (s.length > 1 ? s.substring(1) : '');
+  if (s.isEmpty) return 'Grocery receipt';
+  return 'Receipt: $s';
 }
 
-// yyyy-MM-dd (used in streak & table)
-String _fmtDate(DateTime dt) => '${dt.year}-${_pad2(dt.month)}-${_pad2(dt.day)}';
+/* ====================== Small top value card ====================== */
+
+class _TopValueCard extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final double value;
+  final Color color;
+  const _TopValueCard({
+    required this.icon,
+    required this.label,
+    required this.value,
+    required this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _SectionHeader(icon: icon, label: label),
+        const SizedBox(height: 8),
+        FittedBox(
+          alignment: Alignment.bottomLeft,
+          fit: BoxFit.scaleDown,
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Text(
+                value.toStringAsFixed(1),
+                style: TextStyle(
+                  fontSize: 34,
+                  fontWeight: FontWeight.w800,
+                  color: color,
+                ),
+              ),
+              const SizedBox(width: 6),
+              const Padding(
+                padding: EdgeInsets.only(bottom: 4),
+                child: Text(
+                  'kg',
+                  style: TextStyle(
+                    fontSize: 16,
+                    color: Colors.black54,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}

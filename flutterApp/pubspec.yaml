@@ -76,10 +76,17 @@ flutter_launcher_icons:
 # The following section is specific to Flutter packages.
 flutter:
   assets:
-    - assets/images/eco_pet/
+    - assets/images/eco_pet/happy_2.gif
+    - assets/images/eco_pet/neutral_2.gif
+    - assets/images/eco_pet/sad_2.gif
+    - assets/images/eco_pet/happy_idle.png
+    - assets/images/eco_pet/neutral_idle.png
+    - assets/images/eco_pet/sad_idle.png
     - assets/app_icon/
     - assets/splash/
-    - assets/images/eco_pet/ecopet_bg.png
+    - assets/images/eco_pet/quest_complete.gif
+    - assets/images/eco_pet/grocery_receipt.gif
+    - assets/images/eco_pet/speech_cloud_center_tail.png
 
   # The following line ensures that the Material Icons font is
   # included with your application, so that you can use the icons in

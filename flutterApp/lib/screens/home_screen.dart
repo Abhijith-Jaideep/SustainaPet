@@ -18,7 +18,6 @@ class _HomeScreenState extends State<HomeScreen> {
   int? _userId;
   String? _userName;
 
-  // Initialize with a safe default so the UI renders immediately.
   Future<PetMood>? _futureMood = Future.value(PetMood.neutral);
   int _moodScore = 0; // 0..100
 
@@ -49,7 +48,6 @@ class _HomeScreenState extends State<HomeScreen> {
     if (uid == null) {
       setState(() {
         _userId = null;
-        // Keep the neutral placeholder mood so the screen still renders.
         _futureMood = Future.value(PetMood.neutral);
       });
       return;
@@ -66,7 +64,7 @@ class _HomeScreenState extends State<HomeScreen> {
     if (mounted) {
       _userName = dash.user.name;
       _moodScore = dash.user.ecopetmood.clamp(0, 100);
-      setState(() {}); // updates header + bar immediately
+      setState(() {});
     }
     return petMoodFromScore(dash.user.ecopetmood);
   }
@@ -79,20 +77,72 @@ class _HomeScreenState extends State<HomeScreen> {
     return '$base!';
   }
 
+  Future<void> _resetUser(BuildContext context) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('userId');
+    await prefs.remove('userName');
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('User reset — restart app to re-onboard.')),
+    );
+  }
+
+  Future<void> _devResetMoodToZero() async {
+    if (_userId == null) return;
+    try {
+      await api.resetUserMood(_userId!, 0);
+      if (!mounted) return;
+      setState(() {
+        _moodScore = 0;
+        _futureMood = Future.value(PetMood.sad);
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('EcoPet mood reset to 0 (Dev).')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to reset mood: $e')),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Home')),
+      appBar: AppBar(
+        title: const Text('Home'),
+        actions: [
+          PopupMenuButton<String>(
+            onSelected: (v) async {
+              if (v == 'reset_user') {
+                await _resetUser(context);
+              } else if (v == 'reset_mood') {
+                await _devResetMoodToZero();
+              }
+            },
+            itemBuilder: (context) => const [
+              PopupMenuItem(
+                value: 'reset_mood',
+                child: Text('Dev: Reset EcoPet Mood to 0'),
+              ),
+              PopupMenuItem(
+                value: 'reset_user',
+                child: Text('Dev: Reset User'),
+              ),
+            ],
+          ),
+        ],
+      ),
       body: SafeArea(
         child: FutureBuilder<PetMood>(
           future: _futureMood,
           builder: (context, snap) {
             if (snap.connectionState == ConnectionState.waiting && _userId == null) {
-              // Only show spinner if we truly have no user and are still figuring it out
               return const Center(child: CircularProgressIndicator());
             }
 
-            // Use neutral until we get a real mood.
             final mood = snap.data ?? PetMood.neutral;
             final clamped = _moodScore.clamp(0, 100);
             final feelingText = clamped < 31
@@ -103,38 +153,30 @@ class _HomeScreenState extends State<HomeScreen> {
                 ? "I'm feeling good!"
                 : "I'm feeling great!";
 
-            return SingleChildScrollView(
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  // Greeting header (kept)
-                  Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 8),
-                    child: Column(
-                      children: [
-                        Text(
-                          _greeting(withName: _userName),
-                          textAlign: TextAlign.center,
-                          style: Theme.of(context)
-                              .textTheme
-                              .headlineSmall
-                              ?.copyWith(fontWeight: FontWeight.bold),
-                        ),
-                      ],
-                    ),
+            return Column(
+              children: [
+                // Greeting
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  child: Text(
+                    _greeting(withName: _userName),
+                    textAlign: TextAlign.center,
+                    style: Theme.of(context)
+                        .textTheme
+                        .headlineSmall
+                        ?.copyWith(fontWeight: FontWeight.bold),
                   ),
-                  const SizedBox(height: 12),
+                ),
 
-                  // ====== EcoPet Frame (fills width) ======
-                  Container(
+                // Main section
+                Expanded(
+                  child: Container(
                     width: double.infinity,
-                    padding: const EdgeInsets.all(18),
+                    margin: const EdgeInsets.fromLTRB(12, 8, 12, 12),
                     decoration: BoxDecoration(
                       borderRadius: BorderRadius.circular(18),
                       image: const DecorationImage(
-                        // Make sure this exists in assets and is in pubspec.yaml
-                        image: AssetImage('assets/ecopet_bg.png'),
+                        image: AssetImage('assets/images/eco_pet/ecopet_bg.png'),
                         fit: BoxFit.cover,
                       ),
                       boxShadow: [
@@ -145,57 +187,66 @@ class _HomeScreenState extends State<HomeScreen> {
                         ),
                       ],
                     ),
-                    child: Container(
-                      decoration: BoxDecoration(
-                        color: Colors.white.withOpacity(0.75),
-                        borderRadius: BorderRadius.circular(14),
-                      ),
-                      padding: const EdgeInsets.all(18),
-                      child: LayoutBuilder(
-                        builder: (context, c) {
-                          final isNarrow = c.maxWidth < 520;
-                          final double petHeight = isNarrow ? 300 : 340;
+                    child: LayoutBuilder(
+                      builder: (context, constraints) {
+                        // Even bigger pet
+                        final petHeight =
+                        (constraints.maxHeight * 0.75).clamp(300.0, 600.0);
 
-                          final pet = SizedBox(
-                            height: petHeight,
-                            // Give EcoPet clear constraints and center it.
-                            child: Center(child: EcoPet(mood: mood)),
-                          );
+                        return Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            // Large EcoPet
+                            SizedBox(
+                              height: petHeight,
+                              child: Center(child: EcoPet(mood: mood)),
+                            ),
 
-                          final bubble = _SpeechBubble(
-                            text: feelingText,
-                            tailOnLeft: !isNarrow, // left tail in wide layout
-                          );
+                            const SizedBox(height: 8),
 
-                          return Column(
-                            crossAxisAlignment: CrossAxisAlignment.stretch,
-                            children: [
-                              if (isNarrow) ...[
-                                pet,
-                                const SizedBox(height: 12),
-                                bubble,
-                              ] else ...[
-                                Row(
-                                  crossAxisAlignment: CrossAxisAlignment.center,
-                                  children: [
-                                    // Pet
-                                    Expanded(flex: 3, child: pet),
-                                    const SizedBox(width: 20),
-                                    // Speech bubble
-                                    Expanded(flex: 4, child: bubble),
-                                  ],
+                            // White bubble for message only
+                            Container(
+                              padding:
+                              const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+                              margin: const EdgeInsets.symmetric(horizontal: 32),
+                              decoration: BoxDecoration(
+                                color: Colors.white,
+                                borderRadius: BorderRadius.circular(16),
+                                border: Border.all(color: Colors.grey.shade300),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: Colors.black.withOpacity(0.08),
+                                    blurRadius: 5,
+                                    offset: const Offset(0, 2),
+                                  ),
+                                ],
+                              ),
+                              child: Text(
+                                feelingText,
+                                textAlign: TextAlign.center,
+                                style: const TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.w600,
+                                  color: Colors.black87,
                                 ),
-                              ],
-                              const SizedBox(height: 20),
-                              _HorizontalMoodBar(score: clamped),
-                            ],
-                          );
-                        },
-                      ),
+                              ),
+                            ),
+
+                            const SizedBox(height: 20),
+
+                            // Happiness bar directly on background
+                            Padding(
+                              padding:
+                              const EdgeInsets.symmetric(horizontal: 32.0),
+                              child: _HorizontalMoodBar(score: clamped),
+                            ),
+                          ],
+                        );
+                      },
                     ),
                   ),
-                ],
-              ),
+                ),
+              ],
             );
           },
         ),
@@ -204,7 +255,6 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 }
 
-/// Horizontal mood (happiness) bar with white border
 class _HorizontalMoodBar extends StatelessWidget {
   final int score;
   const _HorizontalMoodBar({required this.score});
@@ -212,9 +262,13 @@ class _HorizontalMoodBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final clamped = score.clamp(0, 100);
-    final pct = clamped / 100.0;
-    final barColor =
-    clamped < 31 ? Colors.red : clamped < 61 ? Colors.amber : Colors.green;
+    final target = clamped / 100.0;
+
+    final barColor = clamped < 31
+        ? Colors.red
+        : clamped < 61
+        ? Colors.amber
+        : Colors.green;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -225,120 +279,27 @@ class _HorizontalMoodBar extends StatelessWidget {
         ),
         const SizedBox(height: 8),
 
-        // Outer white bordered capsule
-        Container(
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(22),
-            border: Border.all(color: Colors.white, width: 2), // white border
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.05),
-                blurRadius: 6,
-                offset: const Offset(0, 2),
+        // Track + animated fill
+        ClipRRect(
+          borderRadius: BorderRadius.circular(20),
+          child: Stack(
+            children: [
+              Container(height: 22, color: Colors.grey.shade300),
+              TweenAnimationBuilder<double>(
+                duration: const Duration(milliseconds: 1200),
+                curve: Curves.easeOutCubic,
+                tween: Tween<double>(begin: 0.0, end: target),
+                builder: (context, value, _) {
+                  return FractionallySizedBox(
+                    widthFactor: value,
+                    child: Container(height: 22, color: barColor),
+                  );
+                },
               ),
             ],
-          ),
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(20),
-            child: Stack(
-              children: [
-                // Track
-                Container(height: 22, color: Colors.grey.shade300),
-                // Fill
-                FractionallySizedBox(
-                  widthFactor: pct,
-                  child: Container(height: 22, color: barColor),
-                ),
-              ],
-            ),
           ),
         ),
       ],
     );
   }
-}
-
-/// Speech bubble for EcoPet's mood message
-class _SpeechBubble extends StatelessWidget {
-  final String text;
-  final bool tailOnLeft;
-  const _SpeechBubble({required this.text, this.tailOnLeft = true});
-
-  @override
-  Widget build(BuildContext context) {
-    final bubble = Container(
-      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.grey.shade300),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.08),
-            blurRadius: 5,
-            offset: const Offset(0, 2),
-          ),
-        ],
-      ),
-      child: Text(
-        text,
-        textAlign: TextAlign.center,
-        style: const TextStyle(
-          fontSize: 18,
-          fontWeight: FontWeight.w600,
-          color: Colors.black87,
-        ),
-      ),
-    );
-
-    final tail = CustomPaint(
-      size: const Size(16, 12),
-      painter: _TrianglePainter(
-        color: Colors.white,
-        strokeColor: Colors.grey.shade300,
-        pointLeft: tailOnLeft,
-      ),
-    );
-
-    return Row(
-      children: tailOnLeft
-          ? [tail, const SizedBox(width: 6), Expanded(child: bubble)]
-          : [Expanded(child: bubble), const SizedBox(width: 6), tail],
-    );
-  }
-}
-
-class _TrianglePainter extends CustomPainter {
-  final Color color;
-  final Color strokeColor;
-  final bool pointLeft;
-  _TrianglePainter({
-    required this.color,
-    required this.strokeColor,
-    this.pointLeft = true,
-  });
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final fill = Paint()..color = color;
-    final stroke = Paint()
-      ..color = strokeColor
-      ..style = PaintingStyle.stroke;
-    final path = Path();
-    if (pointLeft) {
-      path.moveTo(0, size.height / 2);
-      path.lineTo(size.width, 0);
-      path.lineTo(size.width, size.height);
-    } else {
-      path.moveTo(size.width, size.height / 2);
-      path.lineTo(0, 0);
-      path.lineTo(0, size.height);
-    }
-    path.close();
-    canvas.drawPath(path, fill);
-    canvas.drawPath(path, stroke);
-  }
-
-  @override
-  bool shouldRepaint(covariant _TrianglePainter oldDelegate) => false;
 }

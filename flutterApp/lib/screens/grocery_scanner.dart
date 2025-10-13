@@ -212,6 +212,49 @@ class _GroceryScannerScreenState extends State<GroceryScannerScreen> {
     return receiptJson;
   }
 
+  /// Small modal that plays the scan GIF before showing the breakdown.
+  Future<void> _showScanningAnimation({
+    Duration duration = const Duration(seconds: 2),
+  }) async {
+    if (!mounted) return;
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => Dialog(
+        insetPadding: const EdgeInsets.symmetric(horizontal: 40, vertical: 24),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 20, 20, 18),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SizedBox(
+                height: 200,
+                child: Image.asset(
+                  'assets/scan.gif',
+                  fit: BoxFit.contain,
+                  gaplessPlayback: true,
+                ),
+              ),
+              const SizedBox(height: 12),
+              const Text(
+                'Analyzing receipt…',
+                style: TextStyle(fontWeight: FontWeight.w700),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    try {
+      await Future.delayed(duration);
+    } finally {
+      if (mounted) Navigator.of(context, rootNavigator: true).pop();
+    }
+  }
+
   /// ===== Parse → EDIT (names only) → Map → Update UI + Dashboard bump =====
   Future<void> _processReceiptBytes({
     required Uint8List bytes,
@@ -258,7 +301,52 @@ class _GroceryScannerScreenState extends State<GroceryScannerScreen> {
       final mappedRows = await api.mapReceiptForUser(userid, editedReceiptJson);
       if (!mounted) return;
 
-      // 5) Update UI totals
+      // 🐾 Show grocery_receipt.gif before list appears
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => Dialog(
+          insetPadding: const EdgeInsets.symmetric(horizontal: 40, vertical: 24),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 20, 20, 18),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                SizedBox(
+                  height: 260,
+                  width: 260,
+                  child: Image.asset(
+                    'assets/images/eco_pet/grocery_receipt.gif',
+                    fit: BoxFit.contain,
+                    gaplessPlayback: true,
+                  ),
+                ),
+                const SizedBox(height: 14),
+                const Text(
+                  'Analyzing your groceries…',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w700,
+                    fontSize: 16,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+
+// 🕒 Let the GIF finish naturally (adjust timing if needed)
+      await Future.delayed(const Duration(seconds: 6)); // <-- increase this duration to match your GIF length
+      if (mounted) {
+        Navigator.of(context, rootNavigator: true).pop();
+      }
+
+// 🪄 Small fade delay before showing results
+      await Future.delayed(const Duration(milliseconds: 400));
+
+
+      // 5) Update UI totals (after GIF completes)
       final totalFromReceipt = mappedRows.fold<double>(
         0.0,
             (sum, r) => sum + (r.totalEmissions ?? 0.0),
@@ -300,6 +388,7 @@ class _GroceryScannerScreenState extends State<GroceryScannerScreen> {
       if (mounted) setState(() => _loading = false);
     }
   }
+
 
   // ---------- Small helper: show a blocking loader while doing a task ----------
   Future<T> _withBlockingLoader<T>(
@@ -388,8 +477,6 @@ class _GroceryScannerScreenState extends State<GroceryScannerScreen> {
     // 🔒 Show loading screen while normalizing & preparing
     await _withBlockingLoader(() async {
       final Uint8List bytes = await _normalizeImageBytes(raw);
-      // (Optional tiny delay so the loader is visible even for fast paths)
-      // await Future.delayed(const Duration(milliseconds: 250));
       await _showConfirmPage(bytes, name, fromCamera: false);
     }, message: 'Preparing photo…');
   }
@@ -870,7 +957,7 @@ class ConfirmReceiptPage extends StatelessWidget {
   }
 }
 
-/* ===== Edit Receipt Items Page — NAME ONLY ===== */
+/* ===== Edit Receipt Items Page — DELETE ONLY (no text editing) ===== */
 
 class EditReceiptItemsPage extends StatefulWidget {
   final String filename;
@@ -894,48 +981,15 @@ class _EditReceiptItemsPageState extends State<EditReceiptItemsPage> {
   @override
   void initState() {
     super.initState();
+    // Copy items so we can remove locally without mutating the original list
     _items = widget.items
         .map((e) => EditableReceiptItem(
       name: e.name,
-      quantity: e.quantity, // kept but not editable
+      quantity: e.quantity, // preserved, not editable
       unit: e.unit,
       original: e.original,
     ))
         .toList();
-  }
-
-  Future<void> _editName(int index) async {
-    final controller = TextEditingController(text: _items[index].name);
-    final updated = await showDialog<String>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Edit item name'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          textInputAction: TextInputAction.done,
-          decoration: const InputDecoration(
-            hintText: 'Enter item name',
-            border: OutlineInputBorder(),
-          ),
-          onSubmitted: (v) => Navigator.of(ctx).pop(v.trim()),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(ctx).pop(controller.text.trim()),
-            child: const Text('Save'),
-          ),
-        ],
-      ),
-    );
-
-    if (updated != null && updated.isNotEmpty) {
-      setState(() => _items[index].name = updated);
-    }
   }
 
   void _remove(int i) {
@@ -948,7 +1002,7 @@ class _EditReceiptItemsPageState extends State<EditReceiptItemsPage> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Edit Items'),
+        title: const Text('Review Items'),
         actions: [
           TextButton.icon(
             onPressed: () => Navigator.of(context).pop(_items),
@@ -959,7 +1013,7 @@ class _EditReceiptItemsPageState extends State<EditReceiptItemsPage> {
       ),
       body: Column(
         children: [
-          // header
+          // header with tiny preview + filename
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 6),
             child: Row(
@@ -982,7 +1036,9 @@ class _EditReceiptItemsPageState extends State<EditReceiptItemsPage> {
                     widget.filename,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w700),
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
                   ),
                 ),
               ],
@@ -992,7 +1048,7 @@ class _EditReceiptItemsPageState extends State<EditReceiptItemsPage> {
 
           Expanded(
             child: _items.isEmpty
-                ? const Center(child: Text('No items detected. Go back and retry.'))
+                ? const Center(child: Text('No items to review.'))
                 : ListView.separated(
               padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
               itemCount: _items.length,
@@ -1001,13 +1057,15 @@ class _EditReceiptItemsPageState extends State<EditReceiptItemsPage> {
                 final it = _items[i];
                 return Card(
                   elevation: 1,
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
                   child: Padding(
                     padding: const EdgeInsets.fromLTRB(12, 12, 8, 12),
                     child: Row(
                       crossAxisAlignment: CrossAxisAlignment.center,
                       children: [
-                        // ✅ Name fully expanded
+                        // Name + unit (read-only)
                         Expanded(
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
@@ -1024,21 +1082,19 @@ class _EditReceiptItemsPageState extends State<EditReceiptItemsPage> {
                               ),
                               const SizedBox(height: 4),
                               Text(
-                                it.unit == null || it.unit!.isEmpty ? '—' : it.unit!,
-                                style: const TextStyle(fontSize: 12, color: Colors.black54),
+                                (it.unit == null || it.unit!.isEmpty)
+                                    ? '—'
+                                    : it.unit!,
+                                style: const TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.black54,
+                                ),
                               ),
                             ],
                           ),
                         ),
 
-                        // ✏️ Edit name button
-                        IconButton(
-                          tooltip: 'Edit name',
-                          onPressed: () => _editName(i),
-                          icon: const Icon(Icons.edit_outlined),
-                        ),
-
-                        // (Optional) 🗑 Remove line
+                        // 🗑 Delete only
                         IconButton(
                           tooltip: 'Remove',
                           onPressed: () => _remove(i),
@@ -1056,6 +1112,7 @@ class _EditReceiptItemsPageState extends State<EditReceiptItemsPage> {
     );
   }
 }
+
 
 /* ===== Simple blocking loader dialog ===== */
 class _BlockingLoader extends StatelessWidget {

@@ -25,32 +25,28 @@ class _QuestScreenState extends State<QuestScreen> {
   bool _loading = true;
   bool _assigning = false;
 
-  Timer? _weeklyResetTimer;
+  // Only daily decay timers remain (weekly reset removed)
   Timer? _dailyDecayStartTimer;
   Timer? _dailyDecayRepeater;
-
-  Timer? _resetCountdownTimer;
-  String _resetCountdownText = '';
 
   @override
   void initState() {
     super.initState();
     api = PawprintApi(pickBaseUrl());
     _bootstrap();
-    _setupWeeklyReset();
     _scheduleDailyDecayAtMidnight();
-    _startResetCountdownTicker();
   }
 
   @override
   void dispose() {
-    _weeklyResetTimer?.cancel();
     _dailyDecayStartTimer?.cancel();
     _dailyDecayRepeater?.cancel();
-    _resetCountdownTimer?.cancel();
     super.dispose();
   }
 
+  // ---------------------------------------------------------------------------
+  //  INITIAL SETUP
+  // ---------------------------------------------------------------------------
   Future<void> _bootstrap() async {
     setState(() => _loading = true);
     try {
@@ -77,61 +73,22 @@ class _QuestScreenState extends State<QuestScreen> {
       await _refreshAll();
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to load quests: $e')),
-      );
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('Failed to load quests: $e')));
       setState(() => _loading = false);
     }
   }
 
-  void _setupWeeklyReset() {
-    final now = DateTime.now();
-    final todayMidnight = DateTime(now.year, now.month, now.day);
-    final weekday = todayMidnight.weekday; // 1=Mon..7=Sun
-    final raw = (8 - weekday) % 7;
-    final daysUntilNextMonday = raw == 0 ? 7 : raw;
-    final resetTime = todayMidnight.add(Duration(days: daysUntilNextMonday));
-    final duration = resetTime.difference(now);
-
-    _weeklyResetTimer?.cancel();
-    _weeklyResetTimer = Timer(duration, () async {
-      await _assignRandom();
-      _setupWeeklyReset();
-    });
-  }
-
-  DateTime _nextMondayMidnight() {
-    final now = DateTime.now();
-    final todayMidnight = DateTime(now.year, now.month, now.day);
-    final weekday = todayMidnight.weekday;
-    final raw = (8 - weekday) % 7;
-    final days = raw == 0 ? 7 : raw;
-    return todayMidnight.add(Duration(days: days));
-  }
-
-  void _startResetCountdownTicker() {
-    void tick() {
-      final tgt = _nextMondayMidnight();
-      final diff = tgt.difference(DateTime.now());
-      final d = diff.inDays;
-      final h = diff.inHours % 24;
-      final m = diff.inMinutes % 60;
-      if (mounted) {
-        setState(() => _resetCountdownText = 'Resets in ${d}d ${h}h ${m}m');
-      }
-    }
-
-    _resetCountdownTimer?.cancel();
-    _resetCountdownTimer = Timer.periodic(const Duration(minutes: 1), (_) => tick());
-    tick();
-  }
-
+  // ---------------------------------------------------------------------------
+  //  DAILY MOOD DECAY
+  // ---------------------------------------------------------------------------
   void _scheduleDailyDecayAtMidnight() {
     _dailyDecayStartTimer?.cancel();
     _dailyDecayRepeater?.cancel();
 
     final now = DateTime.now();
-    final nextMidnight = DateTime(now.year, now.month, now.day).add(const Duration(days: 1));
+    final nextMidnight =
+    DateTime(now.year, now.month, now.day).add(const Duration(days: 1));
     final untilMidnight = nextMidnight.difference(now);
 
     _dailyDecayStartTimer = Timer(untilMidnight, () async {
@@ -145,17 +102,19 @@ class _QuestScreenState extends State<QuestScreen> {
   Future<void> _applyDailyMoodDecay() async {
     if (_userId == null) return;
     try {
-      // Special endpoint pattern used in your code for daily mood decay
+      // special endpoint pattern retained from your API
       await api.completeUserQuest(-1, moodDelta: -10);
       await _refreshAll();
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Daily mood decay failed: $e')),
-      );
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('Daily mood decay failed: $e')));
     }
   }
 
+  // ---------------------------------------------------------------------------
+  //  REFRESH DATA (manual refresh button + pull to refresh)
+  // ---------------------------------------------------------------------------
   Future<void> _refreshAll() async {
     if (_userId == null) return;
     final uid = _userId!;
@@ -172,7 +131,9 @@ class _QuestScreenState extends State<QuestScreen> {
     });
   }
 
-  // ---------- helpers to preserve order ----------
+  // ---------------------------------------------------------------------------
+  //  MANUAL SHUFFLE (no timer)
+  // ---------------------------------------------------------------------------
   List<UserQuestDto> _replaceInPlace(List<UserQuestDto> list, UserQuestDto item) {
     final idx = list.indexWhere((x) => x.userquestid == item.userquestid);
     if (idx < 0) return list;
@@ -181,7 +142,6 @@ class _QuestScreenState extends State<QuestScreen> {
     return copy;
   }
 
-  // Keep exactly 3 active quests: top up if <3, replace first 3 in place if >=3.
   Future<void> _assignRandom() async {
     if (_userId == null) return;
     setState(() => _assigning = true);
@@ -199,9 +159,9 @@ class _QuestScreenState extends State<QuestScreen> {
         );
         await _refreshAll();
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Added $deficit quest${deficit == 1 ? '' : 's'} to keep it at $target')),
-        );
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content:
+            Text('Added $deficit quest${deficit == 1 ? '' : 's'} to keep it at $target')));
       } else {
         final firstThree = activeNow.take(target).toList();
         final updated = <UserQuestDto>[];
@@ -228,19 +188,20 @@ class _QuestScreenState extends State<QuestScreen> {
         });
 
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Shuffled your quests (kept it at 3)')),
-        );
+            const SnackBar(content: Text('Shuffled your quests (kept it at 3)')));
       }
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Shuffle failed: $e')),
-      );
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('Shuffle failed: $e')));
     } finally {
       if (mounted) setState(() => _assigning = false);
     }
   }
 
+  // ---------------------------------------------------------------------------
+  //  QUEST COMPLETION (shows quest_complete.gif)
+  // ---------------------------------------------------------------------------
   int _moodDeltaForDifficulty(String difficulty) {
     final d = difficulty.trim().toLowerCase();
     if (d == 'easy') return 10;
@@ -254,47 +215,55 @@ class _QuestScreenState extends State<QuestScreen> {
 
     final moodDelta = _moodDeltaForDifficulty(uq.quest.difficulty);
 
+    // optimistic UI: move to completed list immediately
     final optimistic = uq.copyWith(
       iscompleted: true,
       completeddate: DateTime.now(),
     );
     setState(() {
-      _active = _active.where((x) => x.userquestid != uq.userquestid).toList();
-      _completed = [optimistic, ...(_completed)];
+      _active =
+          _active.where((x) => x.userquestid != uq.userquestid).toList();
+      _completed = [optimistic, ..._completed];
     });
 
     final savedAbsLocal = uq.quest.emissions.abs();
+
+    // dialog with quest_complete.gif
     showDialog(
       context: context,
+      barrierDismissible: false,
       builder: (_) => AlertDialog(
-        title: const Text('Quest completed 🎉'),
+        title: const Text('Quest Completed 🎉'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(uq.quest.description),
+            Image.asset(
+              'assets/images/eco_pet/quest_complete.gif',
+              height: 180,
+              fit: BoxFit.contain,
+            ),
+            const SizedBox(height: 12),
+            Text(
+              uq.quest.description,
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontWeight: FontWeight.w600),
+            ),
             const SizedBox(height: 12),
             Row(
+              mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 const Icon(Icons.eco_rounded, color: Colors.green),
-                const SizedBox(width: 8),
+                const SizedBox(width: 6),
                 Text('CO₂e saved: ${savedAbsLocal.toStringAsFixed(3)} kg'),
               ],
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: 6),
             Row(
+              mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 const Icon(Icons.mood, color: Colors.orange),
-                const SizedBox(width: 8),
+                const SizedBox(width: 6),
                 Text('Mood +$moodDelta'),
-              ],
-            ),
-            const SizedBox(height: 8),
-            Row(
-              children: const [
-                Icon(Icons.check_circle, color: Colors.green),
-                SizedBox(width: 8),
-                Text('Marked as completed'),
               ],
             ),
           ],
@@ -302,7 +271,7 @@ class _QuestScreenState extends State<QuestScreen> {
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(),
-            child: const Text('Nice!'),
+            child: const Text('Awesome!'),
           ),
         ],
       ),
@@ -317,17 +286,17 @@ class _QuestScreenState extends State<QuestScreen> {
       await _pullOneIntoLists(uq.userquestid);
     } catch (e) {
       if (!mounted) return;
+      // rollback optimistic update
       setState(() {
-        _completed = _completed.where((x) => x.userquestid != uq.userquestid).toList();
+        _completed =
+            _completed.where((x) => x.userquestid != uq.userquestid).toList();
         _active = [uq, ..._active];
       });
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Completion failed: $e')),
-      );
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('Completion failed: $e')));
     }
   }
 
-  // ---- Replace just one quest (called by card) ----
   Future<UserQuestDto?> _replaceOne(UserQuestDto old) async {
     final diffs = [old.quest.difficulty];
     final fresh = await api.replaceUserQuest(old.userquestid, difficulty: diffs);
@@ -344,14 +313,15 @@ class _QuestScreenState extends State<QuestScreen> {
     return fresh;
   }
 
-  // Pull latest copy for a single item after completion
   Future<void> _pullOneIntoLists(int userQuestId) async {
     final latest = await api.getUserQuest(userQuestId);
     if (!mounted || latest == null) return;
 
     setState(() {
-      _active = _active.where((x) => x.userquestid != userQuestId).toList();
-      _completed = _completed.where((x) => x.userquestid != userQuestId).toList();
+      _active =
+          _active.where((x) => x.userquestid != userQuestId).toList();
+      _completed =
+          _completed.where((x) => x.userquestid != userQuestId).toList();
 
       if (latest.iscompleted) {
         _completed = [latest, ..._completed];
@@ -361,6 +331,9 @@ class _QuestScreenState extends State<QuestScreen> {
     });
   }
 
+  // ---------------------------------------------------------------------------
+  //  UI
+  // ---------------------------------------------------------------------------
   @override
   Widget build(BuildContext context) {
     if (_loading) {
@@ -373,16 +346,7 @@ class _QuestScreenState extends State<QuestScreen> {
       length: 2,
       child: Scaffold(
         appBar: AppBar(
-          title: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text('Quest System'),
-              Text(
-                _resetCountdownText,
-                style: const TextStyle(fontSize: 12, color: Colors.white70),
-              ),
-            ],
-          ),
+          title: const Text('Quests'),
           bottom: const TabBar(
             tabs: [
               Tab(text: 'Active'),
@@ -437,6 +401,9 @@ class _QuestScreenState extends State<QuestScreen> {
   }
 }
 
+// ============================================================================
+//  SUPPORT WIDGETS
+// ============================================================================
 enum _ListMode { active, completed }
 
 class _UserQuestList extends StatelessWidget {
@@ -738,7 +705,8 @@ class _QuestCardState extends State<_QuestCard> {
   );
 }
 
-extension _Copy on UserQuestDto {
+// copyWith for UserQuestDto (used for optimistic UI)
+extension _UserQuestCopyExt on UserQuestDto {
   UserQuestDto copyWith({
     bool? iscompleted,
     DateTime? completeddate,

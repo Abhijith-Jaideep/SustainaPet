@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../api/base_url.dart';
 import '../api/pawprint_api.dart';
+import '../widgets/ecopet.dart'; // PetMood + petMoodFromScore + EcoPet
 
 class SocialsScreen extends StatefulWidget {
   const SocialsScreen({super.key});
@@ -224,7 +225,7 @@ class _SocialsScreenState extends State<SocialsScreen>
         physics: const AlwaysScrollableScrollPhysics(),
         padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
         children: [
-          // Your User ID (cleaner card, new icon, copy button)
+          // Your User ID
           _CardShell(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -351,7 +352,7 @@ class _SocialsScreenState extends State<SocialsScreen>
           ),
           const SizedBox(height: 16),
 
-          // Requests for You (no user id shown)
+          // Requests for You
           _CardShell(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -391,7 +392,6 @@ class _SocialsScreenState extends State<SocialsScreen>
                             r.fromName,
                             style: const TextStyle(fontWeight: FontWeight.w600),
                           ),
-                          // No subtitle (we don't display user ID here anymore)
                           trailing: Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
@@ -414,7 +414,7 @@ class _SocialsScreenState extends State<SocialsScreen>
           ),
           const SizedBox(height: 16),
 
-          // Your Friends (no user id shown)
+          // Your Friends
           _CardShell(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -452,7 +452,6 @@ class _SocialsScreenState extends State<SocialsScreen>
                             f.name,
                             style: const TextStyle(fontWeight: FontWeight.w600),
                           ),
-                          // No subtitle (removed "User ID: ...")
                         ),
                       ),
               ],
@@ -508,11 +507,16 @@ class _SocialsScreenState extends State<SocialsScreen>
                         final rank = idx + 1;
                         final isMe = r.userid == _me;
 
-                        // Weekly emitted/saved (expecting backend to provide these on the DTO)
                         final emitted = _asDouble(r.weeklyEmissionsProduced);
-                        final savedRaw = _asDouble(r.weeklyEmissionsSaved); // likely negative
+                        final savedRaw = _asDouble(r.weeklyEmissionsSaved); // maybe negative
                         final savedMag = savedRaw < 0 ? -savedRaw : savedRaw;
-                        final net = savedMag - emitted; // bigger is better
+                        final net = savedMag - emitted;
+
+                        // 👇 Use the leaderboard row’s OWN pet mood score (0–100)
+                        final int moodScore = (r.ecopetmood ?? 50);
+                        final PetMood mood = petMoodFromScore(
+                          moodScore.clamp(0, 100),
+                        );
 
                         return ListTile(
                           leading: _Medal(rank),
@@ -526,6 +530,12 @@ class _SocialsScreenState extends State<SocialsScreen>
                             'Saved: ${savedMag.toStringAsFixed(1)} kg • '
                                 'Emitted: ${emitted.toStringAsFixed(1)} kg • '
                                 'Net: ${net.toStringAsFixed(1)} kg',
+                          ),
+                          // Tiny EcoPet at right using **their** mood
+                          trailing: SizedBox(
+                            width: 36,
+                            height: 36,
+                            child: EcoPet(mood: mood, size: 36),
                           ),
                         );
                       }),

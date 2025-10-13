@@ -38,6 +38,7 @@ dependencies:
   file_picker: ^8.0.0
   image_picker: ^1.1.2
   image: ^4.2.0
+  video_player: ^2.9.1
 
 
 
@@ -83,6 +84,13 @@ flutter:
     - assets/splash/
     - assets/images/eco_pet/quest_complete.gif
     - assets/images/eco_pet/grocery_receipt.gif
+    - assets/images/tutorial/home.jpg
+    - assets/images/tutorial/quests.jpg
+    - assets/images/tutorial/receipt_scanner.jpg
+    - assets/images/tutorial/socials.jpg
+    - assets/images/tutorial/leaderboard.jpg
+    - assets/intro_video/introductory.mov
+
 
   # The following line ensures that the Material Icons font is
   # included with your application, so that you can use the icons in

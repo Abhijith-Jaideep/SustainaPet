@@ -3,6 +3,8 @@
     "python-envs.pythonProjects": [],
     "python.analysis.extraPaths": [
         "./models",
-        "./src"
+        "./src",
+        "./backend",
+        "./backend"
     ]
 }

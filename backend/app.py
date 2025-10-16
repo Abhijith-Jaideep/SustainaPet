@@ -1,13 +1,31 @@
 # backend/app.py
 from flask import Flask, Blueprint, jsonify, request, abort
 from flask_cors import CORS
-from datetime import datetime
+from datetime import datetime, timedelta
 from pytest import Session
 from sqlalchemy import select, func, cast, Integer
 import os
+# --- add these ---
+import re
+import base64 as _b64
+from io import BytesIO
+from PIL import Image, UnidentifiedImageError
 
-from backend.db import SessionLocal
-from backend.models import FriendRequests, Friends, RequestStatusEnum, User, Quest, UserQuest, Event, EmissionConversionSaving
+import pandas as pd
+from emissions_models.ItemToDataset import (
+    map_receipt_with_emissions,
+    build_index_from_emissions,
+    build_category_index,
+)
+
+from models import GroceryReceipt
+
+
+MAX_IMAGE_BYTES = int(os.environ.get("MAX_IMAGE_BYTES", "6000000"))  # ~6 MB
+
+from db import SessionLocal
+from models import FriendRequests, Friends, RequestStatusEnum, User, Quest, UserQuest, Event, EmissionConversionSaving
+from receipt_update.receipt_parser import extract_items_from_bytes
 
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "*"}})  # relax as needed for dev
@@ -69,6 +87,56 @@ def _month_bounds(year: int, month: int):
         end = datetime(year, month + 1, 1)
     return start, end
 
+# ---- mapping cache (globals) ----
+items_index = None
+cat_index = None
+df_emissions = None
+df_category_emissions = None
+
+def _bump_weekly(user: User, delta_kg: float) -> None:
+    # no-op stub so route doesn't crash; wire to your counters if you have them
+    return
+
+def _ensure_emission_refs_loaded():
+    """
+    Lazy-load FoodEmissions / CategoryEmissions from the SAME database your app already uses,
+    then build indices once and cache them in globals.
+    """
+    global items_index, cat_index, df_emissions, df_category_emissions
+    if items_index is not None and cat_index is not None:
+        return
+
+    s = SessionLocal()
+    try:
+        engine = s.get_bind()
+
+        # Pull only the columns we use
+        df_em = pd.read_sql('SELECT "Name","Emissions","Impact" FROM pawprint."FoodEmissions";', engine)
+        df_cat = pd.read_sql('SELECT "Category","Emissions","Impact" FROM pawprint."CategoryEmissions";', engine)
+
+        # Clean + numeric
+        df_em = df_em[df_em["Name"].notna()].copy()
+        df_cat = df_cat[df_cat["Category"].notna()].copy()
+        df_em["Emissions"] = pd.to_numeric(df_em["Emissions"], errors="coerce").fillna(0.0)
+        df_cat["Emissions"] = pd.to_numeric(df_cat["Emissions"], errors="coerce").fillna(0.0)
+
+        # Build indices using your helper functions
+        idx = build_index_from_emissions(df_em, name_col="Name")
+        cat = build_category_index(df_cat["Category"].tolist())
+
+        # Publish to globals
+        df_emissions = df_em
+        df_category_emissions = df_cat
+        items_index = idx
+        cat_index = cat
+
+        # Rebind to module globals (Python scoping)
+        globals()["df_emissions"] = df_emissions
+        globals()["df_category_emissions"] = df_category_emissions
+        globals()["items_index"] = items_index
+        globals()["cat_index"] = cat_index
+    finally:
+        s.close()
 
 # ---------- misc / health ----------
 @api.get("/ping")
@@ -106,7 +174,7 @@ def create_user():
 
     session = SessionLocal()
     try:
-        u = User(name=name, ecopetmood=0, carbonpoints=0)
+        u = User(name=name, ecopetmood=50, carbonpoints=0)
         session.add(u)
         session.commit()
         session.refresh(u)
@@ -306,6 +374,121 @@ def assign_random_quests(userid):
     finally:
         session.close()
 
+# ---------- Single UserQuest + Replace Random ----------
+
+@api.get("/userquests/<int:userquestid>")
+def get_userquest(userquestid: int):
+    """
+    Return one userquest joined with quest details.
+    Shape matches list_userquests rows (includes nested 'quest').
+    """
+    session = SessionLocal()
+    try:
+        row = session.execute(
+            select(UserQuest, Quest)
+            .join(Quest, Quest.questid == UserQuest.questid)
+            .where(UserQuest.userquestid == userquestid)
+        ).first()
+
+        if not row:
+            abort(404, description="UserQuest not found")
+
+        uq, q = row
+        return jsonify({
+            "userquestid": uq.userquestid,
+            "userid": uq.userid,
+            "questid": uq.questid,
+            "isactive": bool(uq.isactive),
+            "iscompleted": bool(uq.iscompleted),
+            "completeddate": uq.completeddate.isoformat() if uq.completeddate else None,
+            "quest": as_quest_dict(q),
+        })
+    finally:
+        session.close()
+
+
+@api.post("/userquests/<int:userquestid>/replace_random")
+def replace_userquest_random(userquestid: int):
+    """
+    Body (optional):
+      {
+        "difficulty": ["Easy"]   # or ["Easy","Medium"]; defaults to SAME difficulty as current quest
+      }
+
+    Replaces the quest *in-place* on the SAME UserQuest row by switching questid
+    to a random quest the user doesn't already have (any status) and that differs
+    from the current questid. Returns the updated userquest + nested quest.
+    """
+    data = request.get_json(silent=True) or {}
+
+    session = SessionLocal()
+    try:
+        # Load current
+        uq = session.get(UserQuest, userquestid)
+        if not uq:
+            abort(404, description="UserQuest not found")
+
+        cur_q = session.get(Quest, uq.questid)
+        if not cur_q:
+            abort(400, description="Quest missing for this UserQuest")
+
+        # Determine difficulty filter
+        diffs = data.get("difficulty")
+        if not diffs:
+            # default to current quest difficulty
+            diffs = [cur_q.difficulty] if cur_q.difficulty else []
+
+        # Quests already assigned to this user (any status) — avoid duplicates
+        existing_qids = set(
+            qid for (qid,) in session.execute(
+                select(UserQuest.questid).where(UserQuest.userid == uq.userid)
+            ).all()
+        )
+
+        # Candidate pool: not already owned; not the current quest; honor difficulty if provided
+        q = select(Quest).where(~Quest.questid.in_(existing_qids))
+        if diffs:
+            q = q.where(Quest.difficulty.in_(diffs))
+        q = q.order_by(func.random()).limit(1)
+
+        pick = session.execute(q).scalars().first()
+        if not pick:
+            # If we can't find a totally new quest, relax the "not already owned" constraint
+            # but still avoid replacing with the same questid.
+            q2 = select(Quest).where(Quest.questid != uq.questid)
+            if diffs:
+                q2 = q2.where(Quest.difficulty.in_(diffs))
+            q2 = q2.order_by(func.random()).limit(1)
+            pick = session.execute(q2).scalars().first()
+
+        if not pick:
+            abort(409, description="No alternative quest available for replacement")
+
+        # Replace IN-PLACE: keep same userquestid, swap questid, keep active & not completed
+        uq.questid = pick.questid
+        uq.isactive = True
+        uq.iscompleted = False
+        uq.completeddate = None
+
+        session.commit()
+        session.refresh(uq)
+
+        # Join to return nested quest details
+        q_pick = session.get(Quest, uq.questid)
+        return jsonify({
+            "userquestid": uq.userquestid,
+            "userid": uq.userid,
+            "questid": uq.questid,
+            "isactive": bool(uq.isactive),
+            "iscompleted": bool(uq.iscompleted),
+            "completeddate": uq.completeddate.isoformat() if uq.completeddate else None,
+            "quest": as_quest_dict(q_pick),
+        })
+
+    finally:
+        session.close()
+
+
 
 # ---------- Complete a userquest (creates event, updates points/mood) ----------
 @api.post("/userquests/<int:userquestid>/complete")
@@ -461,104 +644,135 @@ def user_dashboard(userid):
 # ---------- Monthly Emissions ----------
 @api.get("/users/<int:userid>/emissions/monthly")
 def user_monthly_emissions(userid):
-    """
-    Query params:
-      - year (default: current UTC year)
-      - month 1..12 (default: current UTC month)
-
-    Returns totals (emitted/saved/net), weekly buckets (1–5), and by-type breakdown.
-    """
     now = datetime.utcnow()
     year = int(request.args.get("year", now.year))
     month = int(request.args.get("month", now.month))
-    if month < 1 or month > 12:
-        abort(400, description="month must be 1..12")
+    if month < 1 or month > 12: abort(400, description="month must be 1..12")
 
     session = SessionLocal()
     try:
         user = session.get(User, userid)
-        if not user:
-            abort(404, description="User not found")
-
+        if not user: abort(404, description="User not found")
         start, end = _month_bounds(year, month)
 
-        # Totals
-        total_sum = session.execute(
-            select(func.coalesce(func.sum(Event.emissions), 0.0))
-            .where(Event.userid == userid)
-            .where(Event.datetime >= start)
-            .where(Event.datetime < end)
-        ).scalar_one()
-
-        emitted_pos = session.execute(
-            select(func.coalesce(func.sum(Event.emissions), 0.0))
-            .where(Event.userid == userid)
-            .where(Event.datetime >= start)
-            .where(Event.datetime < end)
-            .where(Event.emissions > 0.0)
-        ).scalar_one()
-
-        saved_raw = session.execute(
-            select(func.coalesce(func.sum(Event.emissions), 0.0))
-            .where(Event.userid == userid)
-            .where(Event.datetime >= start)
-            .where(Event.datetime < end)
-            .where(Event.emissions < 0.0)
-        ).scalar_one()
+        total_sum = session.execute(select(func.coalesce(func.sum(Event.emissions), 0.0))
+            .where(Event.userid == userid, Event.datetime >= start, Event.datetime < end)).scalar_one()
+        emitted_pos = session.execute(select(func.coalesce(func.sum(Event.emissions), 0.0))
+            .where(Event.userid == userid, Event.datetime >= start, Event.datetime < end, Event.emissions > 0.0)).scalar_one()
+        saved_raw = session.execute(select(func.coalesce(func.sum(Event.emissions), 0.0))
+            .where(Event.userid == userid, Event.datetime >= start, Event.datetime < end, Event.emissions < 0.0)).scalar_one()
         saved_mag = abs(float(saved_raw)) if saved_raw else 0.0
 
-        # Weekly buckets (1–5): floor((day-1)/7)+1
-        week_of_month = cast(
-            (func.floor((func.extract("day", Event.datetime) - 1) / 7) + 1),
-            Integer,
-        )
-        weekly_rows = session.execute(
-            select(
-                week_of_month.label("week"),
-                func.coalesce(func.sum(Event.emissions), 0.0).label("kg"),
-            )
-            .where(Event.userid == userid)
-            .where(Event.datetime >= start)
-            .where(Event.datetime < end)
-            .group_by(week_of_month)
-            .order_by(week_of_month.asc())
-        ).all()
+        week_of_month = cast((func.floor((func.extract("day", Event.datetime) - 1) / 7) + 1), Integer)
+        weekly_rows = session.execute(select(
+            week_of_month.label("week"),
+            func.coalesce(func.sum(Event.emissions), 0.0).label("kg"),
+        ).where(Event.userid == userid, Event.datetime >= start, Event.datetime < end)
+         .group_by(week_of_month).order_by(week_of_month.asc())).all()
         weekly = [{"week": int(w.week), "kg": float(w.kg)} for w in weekly_rows]
 
-        # By type
-        type_rows = session.execute(
-            select(
-                Event.type.label("type"),
-                func.coalesce(func.sum(Event.emissions), 0.0).label("kg"),
-            )
-            .where(Event.userid == userid)
-            .where(Event.datetime >= start)
-            .where(Event.datetime < end)
-            .group_by(Event.type)
-            .order_by(Event.type.asc())
-        ).all()
-        breakdown = [
-            {"type": r.type, "kg": float(r.kg)} for r in type_rows if r.type is not None
-        ]
+        type_rows = session.execute(select(Event.type.label("type"), func.coalesce(func.sum(Event.emissions), 0.0).label("kg"))
+            .where(Event.userid == userid, Event.datetime >= start, Event.datetime < end)
+            .group_by(Event.type).order_by(Event.type.asc())).all()
+        breakdown = [{"type": r.type, "kg": float(r.kg)} for r in type_rows if r.type is not None]
 
         return jsonify({
             "user": {"userid": user.userid, "name": user.name},
-            "period": {
-                "year": year,
-                "month": month,
-                "start": start.date().isoformat(),
-                "end": end.date().isoformat(),
-            },
-            "totals": {
-                "emitted_kg": float(emitted_pos),
-                "saved_kg": float(saved_mag),
-                "net_kg": float(total_sum),  # could be negative if net saving
-            },
+            "period": {"year": year, "month": month, "start": start.date().isoformat(), "end": end.date().isoformat()},
+            "totals": {"emitted_kg": float(emitted_pos), "saved_kg": float(saved_mag), "net_kg": float(total_sum)},
             "weekly": weekly,
             "breakdown_by_type": breakdown,
         })
     finally:
         session.close()
+
+# ---------- Photo Extraction placeholder ----------
+@api.post("/users/<int:userid>/emissions/monthly")
+def user_photo_info():
+    return jsonify({"ok": False, "error": "not implemented"}), 501
+
+# ---------- Receipt Parsing ----------
+def _normalize_b64(s: str) -> bytes:
+    s = re.sub(r'^data:image/[^;]+;base64,', '', s, flags=re.I)
+    s = s.replace('-', '+').replace('_', '/')
+    pad = (-len(s)) % 4
+    if pad: s += '=' * pad
+    return _b64.b64decode(s, validate=False)
+
+@api.post("/receipt-parser")
+def update_receipt():
+    data = request.get_json(silent=True) or {}
+    b64s = data.get("image_base64")
+    if not b64s:
+        return jsonify({"error": "No image_base64 field"}), 400
+
+    try:
+        # quick size gate on the base64 payload (~0.75 factor -> decoded bytes)
+        approx_bytes = int(len(b64s) * 0.75)
+        if approx_bytes > MAX_IMAGE_BYTES:
+            return jsonify({"error": f"image too large; limit {MAX_IMAGE_BYTES} bytes"}), 413
+
+        # decode & sanity check
+        img_bytes = _normalize_b64(b64s)
+        with Image.open(BytesIO(img_bytes)) as im:
+            im.verify()
+
+        # Let receipt_parser decide how to create the Vision client/creds.
+        # Just pass through whatever the env provides (path or inline JSON).
+        key_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+        items_parsed = extract_items_from_bytes(img_bytes, key_path=key_path)
+
+        return jsonify({"receipt_json": items_parsed})
+
+    except UnidentifiedImageError:
+        return jsonify({"error": "invalid_image"}), 400
+    except Exception as e:
+        return jsonify({"error": "Parsing failed", "detail": str(e)}), 500
+
+
+@api.post("/users/<int:userid>/map-receipt")  # <-- fixed leading slash
+def map_receipt_route(userid):
+    receipt_json = request.get_json(silent=True)
+    if receipt_json is None:
+        return jsonify({"error": "invalid_json"}), 400
+
+    _ensure_emission_refs_loaded()
+    session = SessionLocal()
+    try:
+        df_filtered = map_receipt_with_emissions(
+            receipt_json,
+            items_index,
+            cat_index,
+            df_emissions,
+            df_category_emissions
+        )
+
+        total_emissions = float(df_filtered["TotalEmissions"].sum())
+
+        gr = GroceryReceipt(userid=userid, totalemissions=total_emissions, date=datetime.utcnow())
+        session.add(gr)
+        session.flush()
+
+        ev = Event(
+            userid=userid,
+            receiptid=gr.receiptid,
+            description=f"Grocery receipt with {len(df_filtered)} items",
+            type="Grocery",
+            emissions=total_emissions,
+            datetime=datetime.utcnow(),
+        )
+        session.add(ev)
+
+        u = session.get(User, userid)
+        if not u:
+            abort(404, description="User not found")
+        _bump_weekly(u, total_emissions)
+
+        session.commit()
+        return jsonify(df_filtered.to_dict(orient="records"))
+    finally:
+        session.close()
+
 
 @api.get("/users/<int:userid>/search_friend")
 def search_friend(userid):
@@ -702,51 +916,128 @@ def process_request(userid: int):
 def show_leaderboard(userid: int):
     """
     Return a leaderboard of the user and their friends,
-    ranked by carbonpoints (contributions).
+    ranked primarily by carbon saved (monthly), then by lowest emitted (monthly),
+    then by carbonpoints.
     """
     db: Session = SessionLocal()
     try:
-        # 1. check whether the user is exists
+        # 1) Ensure current user exists
         current_user = db.query(User).filter(User.userid == userid).first()
         if not current_user:
             return jsonify({"error": "User not found"}), 404
 
-        # 2. obtain the list of user_id of current users
+        # 2) Friend ids for this user
         friend_ids = db.query(Friends.friendid).filter(Friends.userid == userid).all()
         friend_ids = [fid for (fid,) in friend_ids]
 
-        # 3. inlcuding myself
+        # 3) Include the user themselves
         user_ids = friend_ids + [userid]
 
-        # 4. query the information of all users
+        # 4) Fetch users
         users = db.query(User).filter(User.userid.in_(user_ids)).all()
 
-        # 5. Sort by carbon points in descending order
-        leaderboard = sorted(
-            users,
-            key=lambda u: u.carbonpoints,
-            reverse=True
-        )
+        # --- Time windows ---
+        now = datetime.utcnow()
+        month_start, month_end = _month_bounds(now.year, now.month)
+        week_start = now - timedelta(days=7)
 
-        # 6. return JSON
-        result = [
-            {
-                "userid": u.userid,
+        # --- Helper: reduce rows -> dict {userid: sum} ---
+        def _to_map(rows):
+            out = {}
+            for uid, total in rows:
+                out[int(uid)] = float(total or 0.0)
+            return out
+
+        # Monthly emitted (positive only)
+        emitted_month_rows = db.execute(
+            select(Event.userid, func.coalesce(func.sum(Event.emissions), 0.0))
+            .where(Event.userid.in_(user_ids))
+            .where(Event.datetime >= month_start)
+            .where(Event.datetime < month_end)
+            .where(Event.emissions > 0.0)
+            .group_by(Event.userid)
+        ).all()
+        emitted_month = _to_map(emitted_month_rows)
+
+        # Monthly saved (negative only) -> store magnitude (positive number)
+        saved_month_rows = db.execute(
+            select(Event.userid, func.coalesce(func.sum(Event.emissions), 0.0))
+            .where(Event.userid.in_(user_ids))
+            .where(Event.datetime >= month_start)
+            .where(Event.datetime < month_end)
+            .where(Event.emissions < 0.0)
+            .group_by(Event.userid)
+        ).all()
+        # convert to magnitude
+        saved_month = {int(uid): abs(float(total or 0.0)) for uid, total in saved_month_rows}
+
+        # Weekly (last 7 days) emitted (positive)
+        emitted_week_rows = db.execute(
+            select(Event.userid, func.coalesce(func.sum(Event.emissions), 0.0))
+            .where(Event.userid.in_(user_ids))
+            .where(Event.datetime >= week_start)
+            .where(Event.datetime <= now)
+            .where(Event.emissions > 0.0)
+            .group_by(Event.userid)
+        ).all()
+        emitted_week = _to_map(emitted_week_rows)
+
+        # Weekly (last 7 days) saved (negative) -> magnitude
+        saved_week_rows = db.execute(
+            select(Event.userid, func.coalesce(func.sum(Event.emissions), 0.0))
+            .where(Event.userid.in_(user_ids))
+            .where(Event.datetime >= week_start)
+            .where(Event.datetime <= now)
+            .where(Event.emissions < 0.0)
+            .group_by(Event.userid)
+        ).all()
+        saved_week_mag = {int(uid): abs(float(total or 0.0)) for uid, total in saved_week_rows}
+
+        # Sort: saved_month DESC, emitted_month ASC, carbonpoints DESC, name ASC
+        def _sort_key(u: User):
+            s = saved_month.get(u.userid, 0.0)
+            e = emitted_month.get(u.userid, 0.0)
+            return (-s, e, -int(u.carbonpoints or 0), (u.name or "").lower())
+
+        leaderboard = sorted(users, key=_sort_key)
+
+        # Build response
+        result = []
+        for u in leaderboard:
+            uid = u.userid
+            em_month = emitted_month.get(uid, 0.0)
+            sv_month = saved_month.get(uid, 0.0)
+            em_week = emitted_week.get(uid, 0.0)
+            sv_week = saved_week_mag.get(uid, 0.0)
+
+            result.append({
+                "userid": uid,
                 "name": u.name,
-                "carbonpoints": u.carbonpoints,
-                "ecopetmood": u.ecopetmood
-            }
-            for u in leaderboard
-        ]
+                "carbonpoints": int(u.carbonpoints or 0),
+                "ecopetmood": int(u.ecopetmood or 0),
+
+                # Monthly totals for UI/labels
+                "emitted_month_kg": em_month,   # >= 0
+                "saved_month_kg": sv_month,     # magnitude
+
+                # Weekly (last 7 days) — convenient for top cards if you want
+                "emitted_week_kg": em_week,     # >= 0
+                "saved_week_kg": sv_week,       # magnitude
+
+                # Frontend-friendly aliases (match your UserDto convention)
+                "weekly_emissions_produced": em_week,   # positive
+                "weekly_emissions_saved": -sv_week,     # negative by convention
+            })
 
         return jsonify({"leaderboard": result})
 
     finally:
         db.close()
 
+
 # Mount the blueprint
 app.register_blueprint(api)
 
 if __name__ == "__main__":
     # Run with: python -m backend.app
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    app.run(host="0.0.0.0", port=8080, debug=True)

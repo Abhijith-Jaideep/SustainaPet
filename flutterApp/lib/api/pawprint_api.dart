@@ -1,4 +1,3 @@
-// lib/api/pawprint_api.dart
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -466,8 +465,9 @@ class PawprintApi {
       body['difficulty'] = difficulty;
     }
 
-    final resp =
-    await http.post(uri, headers: _headers, body: jsonEncode(body)).timeout(_timeout);
+    final resp = await http
+        .post(uri, headers: _headers, body: jsonEncode(body))
+        .timeout(_timeout);
 
     if (resp.statusCode == 204 || resp.body.trim().isEmpty) {
       return const <UserQuestDto>[];
@@ -514,8 +514,9 @@ class PawprintApi {
       if (when != null) 'completeddate': when.toIso8601String(),
       'mood_delta': moodDelta,
     };
-    final resp =
-    await http.post(uri, headers: _headers, body: jsonEncode(body)).timeout(_timeout);
+    final resp = await http
+        .post(uri, headers: _headers, body: jsonEncode(body))
+        .timeout(_timeout);
     if (resp.statusCode != 200) {
       throw HttpException('Complete quest error: ${resp.statusCode} ${resp.body}');
     }
@@ -539,12 +540,15 @@ class PawprintApi {
       int userQuestId, {
         List<String>? difficulty,
       }) async {
-    final uri = Uri.parse('$baseUrl/api/userquests/$userQuestId/replace_random');
-    final body =
-    (difficulty != null && difficulty.isNotEmpty) ? {'difficulty': difficulty} : {};
+    final uri =
+    Uri.parse('$baseUrl/api/userquests/$userQuestId/replace_random');
+    final body = (difficulty != null && difficulty.isNotEmpty)
+        ? {'difficulty': difficulty}
+        : {};
 
-    final resp =
-    await http.post(uri, headers: _headers, body: jsonEncode(body)).timeout(_timeout);
+    final resp = await http
+        .post(uri, headers: _headers, body: jsonEncode(body))
+        .timeout(_timeout);
 
     if (resp.statusCode == 404) return null;
     if (resp.statusCode != 200) {
@@ -604,8 +608,9 @@ class PawprintApi {
       savings: savings,
     );
 
-    final resp =
-    await http.post(uri, headers: _headers, body: jsonEncode(payload)).timeout(_mapTimeout);
+    final resp = await http
+        .post(uri, headers: _headers, body: jsonEncode(payload))
+        .timeout(_mapTimeout);
     if (resp.statusCode != 200) {
       throw HttpException('Map failed: ${resp.statusCode} ${resp.body}');
     }
@@ -764,8 +769,9 @@ class PawprintApi {
   }) async {
     final uri = Uri.parse('$baseUrl/api/users/$userid/process_request');
     final body = {'request_id': requestId, 'action': accept ? 'accept' : 'reject'};
-    final resp =
-    await http.post(uri, headers: _headers, body: jsonEncode(body)).timeout(_timeout);
+    final resp = await http
+        .post(uri, headers: _headers, body: jsonEncode(body))
+        .timeout(_timeout);
 
     if (resp.statusCode == 200) return;
 
@@ -774,15 +780,8 @@ class PawprintApi {
 
   /// GET /api/users/<userid>/leaderboard
   ///
-  /// Expected backend item shape (ideal):
-  /// {
-  ///   "userid": 1, "name": "Alice",
-  ///   "carbonpoints": 123, "ecopetmood": 75,
-  ///   "weekly_emissions_produced": 2.5,  // >= 0
-  ///   "weekly_emissions_saved": -1.7     // <= 0 (negative == saved)
-  /// }
-  ///
-  /// If weekly fields are missing, we fall back to per-user dashboard calls.
+  /// Accepts either:
+  ///   { "leaderboard": [...] }  or  [ ... ]
   Future<List<FriendsLeaderboardRowDto>> getFriendsLeaderboard(int userid) async {
     final uri = Uri.parse('$baseUrl/api/users/$userid/leaderboard');
     final resp = await http.get(uri, headers: _headers).timeout(_timeout);
@@ -790,45 +789,62 @@ class PawprintApi {
     if (resp.statusCode != 200) {
       throw HttpException('leaderboard error: ${resp.statusCode} ${resp.body}');
     }
-    final j = jsonDecode(resp.body) as Map<String, dynamic>;
-    final List raw = (j['leaderboard'] as List? ?? const []);
+
+    final decoded = jsonDecode(resp.body);
+
+    // Flexible payload handling
+    List raw;
+    if (decoded is List) {
+      raw = decoded;
+    } else if (decoded is Map<String, dynamic>) {
+      final lb = decoded['leaderboard'];
+      if (lb is List) {
+        raw = lb;
+      } else if (decoded['results'] is List) {
+        raw = decoded['results'] as List;
+      } else {
+        throw const FormatException('Unexpected leaderboard payload shape');
+      }
+    } else {
+      throw const FormatException('Unexpected leaderboard payload type');
+    }
 
     double _toDouble(dynamic v) =>
         (v is num) ? v.toDouble() : double.tryParse('$v') ?? 0.0;
+    int _toInt(dynamic v) =>
+        (v is num) ? v.toInt() : int.tryParse('$v') ?? 0;
 
-    // Parse what we can from the response
-    final rows = raw.map((e) {
-      final m = e as Map<String, dynamic>;
+    var rows = raw.whereType<Map>().map((e) {
+      final m = e.cast<String, dynamic>();
       return FriendsLeaderboardRowDto(
-        userid: (m['userid'] as num).toInt(),
+        userid: _toInt(m['userid']),
         name: (m['name'] ?? '').toString(),
-        carbonpoints: (m['carbonpoints'] as num?)?.toInt() ?? 0,
-        ecopetmood: (m['ecopetmood'] as num?)?.toInt() ?? 0,
+        carbonpoints: _toInt(m['carbonpoints']),
+        ecopetmood: _toInt(m['ecopetmood']),
         weeklyEmissionsProduced: _toDouble(m['weekly_emissions_produced']),
         weeklyEmissionsSaved: _toDouble(m['weekly_emissions_saved']),
       );
     }).toList();
 
-    // If ANY row is missing weekly fields (both zero and null-intent), try to fill from dashboard.
+    // Fill weekly numbers from dashboard if both are zero
     final needsFill = rows.any((r) =>
-    (r.weeklyEmissionsProduced == 0.0 && r.weeklyEmissionsSaved == 0.0));
+    r.weeklyEmissionsProduced == 0.0 && r.weeklyEmissionsSaved == 0.0);
 
     if (needsFill) {
-      final filled = await Future.wait(rows.map((r) async {
+      rows = await Future.wait(rows.map((r) async {
+        if (r.weeklyEmissionsProduced != 0.0 || r.weeklyEmissionsSaved != 0.0) {
+          return r;
+        }
         try {
-          // Skip current user? We still fetch, so the board shows consistent data for everyone.
           final dash = await getDashboard(r.userid);
           return r.copyWith(
             weeklyEmissionsProduced: dash.user.weeklyEmissionsProduced,
             weeklyEmissionsSaved: dash.user.weeklyEmissionsSaved,
           );
         } catch (_) {
-          // Keep original if dashboard fails
           return r;
         }
       }));
-
-      return filled;
     }
 
     return rows;

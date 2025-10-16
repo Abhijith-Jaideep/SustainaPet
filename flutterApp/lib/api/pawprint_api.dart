@@ -1,4 +1,3 @@
-// lib/api/pawprint_api.dart
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -12,8 +11,7 @@ class UserDto {
   final int ecopetmood; // 0..100
   final int carbonpoints;
 
-  /// Weekly counters from backend (kept "as-is")
-  /// produced >= 0, saved <= 0
+  // Optional weekly counters from backend (if present)
   final double weeklyEmissionsProduced;
   final double weeklyEmissionsSaved;
 
@@ -27,16 +25,18 @@ class UserDto {
   });
 
   factory UserDto.fromJson(Map<String, dynamic> j) {
-    // Support both shapes: { ...user:{...} } or flat { ... }
-    final u = (j['user'] is Map<String, dynamic>) ? (j['user'] as Map<String, dynamic>) : j;
+    final u = (j['user'] is Map<String, dynamic>)
+        ? (j['user'] as Map<String, dynamic>)
+        : j;
 
-    double _numToDouble(dynamic v) => (v is num) ? v.toDouble() : double.tryParse('$v') ?? 0.0;
+    double _numToDouble(dynamic v) =>
+        (v is num) ? v.toDouble() : double.tryParse('$v') ?? 0.0;
 
     return UserDto(
       userid: (u['userid'] as num).toInt(),
-      name: u['name'] as String,
-      ecopetmood: (u['ecopetmood'] as num).toInt(),
-      carbonpoints: (u['carbonpoints'] as num).toInt(),
+      name: (u['name'] ?? '').toString(),
+      ecopetmood: (u['ecopetmood'] as num?)?.toInt() ?? 0,
+      carbonpoints: (u['carbonpoints'] as num?)?.toInt() ?? 0,
       weeklyEmissionsProduced: _numToDouble(u['weekly_emissions_produced']),
       weeklyEmissionsSaved: _numToDouble(u['weekly_emissions_saved']),
     );
@@ -141,7 +141,7 @@ class EventDto {
   final int userid;
   final int? userquestid;
   final String description;
-  final String type; // "Quest" | "Grocery" | "Receipt" | ...
+  final String type; // "Quest" | "Grocery" | "Points" | ...
   final double emissions; // negative == saved
   final DateTime datetime;
 
@@ -158,7 +158,8 @@ class EventDto {
   factory EventDto.fromJson(Map<String, dynamic> j) => EventDto(
     eventid: (j['eventid'] as num).toInt(),
     userid: (j['userid'] as num).toInt(),
-    userquestid: j['userquestid'] == null ? null : (j['userquestid'] as num).toInt(),
+    userquestid:
+    j['userquestid'] == null ? null : (j['userquestid'] as num).toInt(),
     description: j['description'] as String,
     type: j['type'] as String,
     emissions: (j['emissions'] as num).toDouble(),
@@ -266,9 +267,64 @@ class ReceiptMapRow {
         ? (j['Confidence'] as num).toDouble()
         : double.tryParse('${j['Confidence']}'),
     method: j['Method']?.toString(),
-    // Accept both `Impact` and `impact`
     impact: (j['Impact'] ?? j['impact'])?.toString(),
   );
+}
+
+/* ===================== Socials DTOs ===================== */
+
+class FriendDto {
+  final int userid;
+  final String name;
+  FriendDto({required this.userid, required this.name});
+}
+
+class FriendRequestDto {
+  final int requestId;
+  final int fromUserId;
+  final String fromName;
+  FriendRequestDto({
+    required this.requestId,
+    required this.fromUserId,
+    required this.fromName,
+  });
+}
+
+class FriendsLeaderboardRowDto {
+  final int userid;
+  final String name;
+  final int carbonpoints;
+  final int ecopetmood;
+
+  /// Weekly emitted (>= 0) as provided by backend or fetched via dashboard.
+  final double weeklyEmissionsProduced;
+
+  /// Weekly saved (<= 0) as provided by backend or fetched via dashboard.
+  final double weeklyEmissionsSaved;
+
+  FriendsLeaderboardRowDto({
+    required this.userid,
+    required this.name,
+    required this.carbonpoints,
+    required this.ecopetmood,
+    required this.weeklyEmissionsProduced,
+    required this.weeklyEmissionsSaved,
+  });
+
+  FriendsLeaderboardRowDto copyWith({
+    double? weeklyEmissionsProduced,
+    double? weeklyEmissionsSaved,
+  }) {
+    return FriendsLeaderboardRowDto(
+      userid: userid,
+      name: name,
+      carbonpoints: carbonpoints,
+      ecopetmood: ecopetmood,
+      weeklyEmissionsProduced:
+      weeklyEmissionsProduced ?? this.weeklyEmissionsProduced,
+      weeklyEmissionsSaved: weeklyEmissionsSaved ?? this.weeklyEmissionsSaved,
+    );
+  }
 }
 
 /* ===================== API ===================== */
@@ -279,7 +335,7 @@ class PawprintApi {
 
   static const _headers = {'Content-Type': 'application/json'};
   static const _timeout = Duration(seconds: 10);
-  static const _parseTimeout = Duration(seconds: 30); // OCR can be slow
+  static const _parseTimeout = Duration(seconds: 30);
   static const _mapTimeout = Duration(seconds: 20);
 
   void _logUrl(String label, Uri uri) {
@@ -296,14 +352,12 @@ class PawprintApi {
     return resp.body;
   }
 
-  /// Create a user on the backend and return the created user.
+  /* =============== Users =============== */
+
   Future<UserDto> createUser({required String name}) async {
     final uri = Uri.parse('$baseUrl/api/users');
-    final resp = await http.post(
-      uri,
-      headers: _headers,
-      body: jsonEncode({'name': name}),
-    );
+    final resp =
+    await http.post(uri, headers: _headers, body: jsonEncode({'name': name}));
     if (resp.statusCode != 201) {
       throw Exception('Create user failed: ${resp.statusCode} ${resp.body}');
     }
@@ -311,7 +365,6 @@ class PawprintApi {
     return UserDto.fromJson(j);
   }
 
-  /// Fetch a single user by ID (used by Dev Login).
   Future<UserDto> getUser(int userid) async {
     final uri = Uri.parse('$baseUrl/api/users/$userid');
     final resp = await http.get(uri, headers: _headers).timeout(_timeout);
@@ -320,6 +373,16 @@ class PawprintApi {
     }
     final map = jsonDecode(resp.body) as Map<String, dynamic>;
     return UserDto.fromJson(map);
+  }
+
+  Future<List<UserDto>> listUsers() async {
+    final uri = Uri.parse('$baseUrl/api/users');
+    final resp = await http.get(uri, headers: _headers).timeout(_timeout);
+    if (resp.statusCode != 200) {
+      throw HttpException('List users error: ${resp.statusCode} ${resp.body}');
+    }
+    final List data = jsonDecode(resp.body) as List;
+    return data.map((e) => UserDto.fromJson(e as Map<String, dynamic>)).toList();
   }
 
   Future<DashboardDto> getDashboard(int userid) async {
@@ -331,6 +394,8 @@ class PawprintApi {
     return DashboardDto.fromJson(jsonDecode(resp.body) as Map<String, dynamic>);
   }
 
+  /* =============== Emissions / Conversions / Events =============== */
+
   Future<MonthlyEmissionsDto> getMonthlyEmissions({
     required int userid,
     int? year,
@@ -339,7 +404,6 @@ class PawprintApi {
     final qs = <String, String>{};
     if (year != null) qs['year'] = '$year';
     if (month != null) qs['month'] = '$month';
-
     final uri = Uri.parse('$baseUrl/api/users/$userid/emissions/monthly')
         .replace(queryParameters: qs.isEmpty ? null : qs);
 
@@ -347,7 +411,8 @@ class PawprintApi {
     if (resp.statusCode != 200) {
       throw HttpException('Monthly emissions error: ${resp.statusCode} ${resp.body}');
     }
-    return MonthlyEmissionsDto.fromJson(jsonDecode(resp.body) as Map<String, dynamic>);
+    return MonthlyEmissionsDto.fromJson(
+        jsonDecode(resp.body) as Map<String, dynamic>);
   }
 
   Future<List<ConversionDto>> getConversions() async {
@@ -357,10 +422,10 @@ class PawprintApi {
       throw HttpException('Conversions error: ${resp.statusCode} ${resp.body}');
     }
     final List list = jsonDecode(resp.body) as List;
-    return list.map((e) => ConversionDto.fromJson(e as Map<String, dynamic>)).toList();
+    return list
+        .map((e) => ConversionDto.fromJson(e as Map<String, dynamic>))
+        .toList();
   }
-
-  /* =============== Events =============== */
 
   Future<List<EventDto>> getUserEvents(int userid, {int limit = 50}) async {
     final uri = Uri.parse('$baseUrl/api/users/$userid/events')
@@ -400,7 +465,9 @@ class PawprintApi {
       body['difficulty'] = difficulty;
     }
 
-    final resp = await http.post(uri, headers: _headers, body: jsonEncode(body)).timeout(_timeout);
+    final resp = await http
+        .post(uri, headers: _headers, body: jsonEncode(body))
+        .timeout(_timeout);
 
     if (resp.statusCode == 204 || resp.body.trim().isEmpty) {
       return const <UserQuestDto>[];
@@ -447,7 +514,9 @@ class PawprintApi {
       if (when != null) 'completeddate': when.toIso8601String(),
       'mood_delta': moodDelta,
     };
-    final resp = await http.post(uri, headers: _headers, body: jsonEncode(body)).timeout(_timeout);
+    final resp = await http
+        .post(uri, headers: _headers, body: jsonEncode(body))
+        .timeout(_timeout);
     if (resp.statusCode != 200) {
       throw HttpException('Complete quest error: ${resp.statusCode} ${resp.body}');
     }
@@ -471,10 +540,15 @@ class PawprintApi {
       int userQuestId, {
         List<String>? difficulty,
       }) async {
-    final uri = Uri.parse('$baseUrl/api/userquests/$userQuestId/replace_random');
-    final body = (difficulty != null && difficulty.isNotEmpty) ? {'difficulty': difficulty} : {};
+    final uri =
+    Uri.parse('$baseUrl/api/userquests/$userQuestId/replace_random');
+    final body = (difficulty != null && difficulty.isNotEmpty)
+        ? {'difficulty': difficulty}
+        : {};
 
-    final resp = await http.post(uri, headers: _headers, body: jsonEncode(body)).timeout(_timeout);
+    final resp = await http
+        .post(uri, headers: _headers, body: jsonEncode(body))
+        .timeout(_timeout);
 
     if (resp.statusCode == 404) return null;
     if (resp.statusCode != 200) {
@@ -500,15 +574,12 @@ class PawprintApi {
 
   /* =============== Receipt Parsing & Mapping =============== */
 
-  /// 1) OCR/parse: send raw image bytes (JPG/PNG) to /receipt-parser
-  /// Returns either:
-  ///   - a List of item maps, or
-  ///   - a Map with key 'receipt_json', or already in {items:[...]} shape
   Future<dynamic> parseReceiptFromBytes(Uint8List bytes) async {
     final uri = Uri.parse('$baseUrl/api/receipt-parser'); // not under /api
     _logUrl('POST', uri);
     final body = jsonEncode({'image_base64': base64Encode(bytes)});
-    final resp = await http.post(uri, headers: _headers, body: body).timeout(_parseTimeout);
+    final resp =
+    await http.post(uri, headers: _headers, body: body).timeout(_parseTimeout);
 
     if (resp.statusCode != 200) {
       throw HttpException('Parser failed: ${resp.statusCode} ${resp.body}');
@@ -517,11 +588,9 @@ class PawprintApi {
     if (decoded is Map<String, dynamic> && decoded.containsKey('receipt_json')) {
       return decoded['receipt_json'];
     }
-    return decoded; // some backends return the list directly
+    return decoded;
   }
 
-  /// 2) Map: user-scoped endpoint `/<userid>/map-receipt`
-  /// Payload is normalized to: { "items":[...], "subtotal"?, "total"?, "savings"? }
   Future<List<ReceiptMapRow>> mapReceiptForUser(
       int userid,
       dynamic parserOutput, {
@@ -555,7 +624,6 @@ class PawprintApi {
     throw HttpException('Unexpected /<userid>/map-receipt response: ${resp.body}');
   }
 
-  /// Convenience: full pipeline (user-scoped)
   Future<List<ReceiptMapRow>> processReceiptForUser(
       int userid,
       Uint8List bytes, {
@@ -573,11 +641,6 @@ class PawprintApi {
     );
   }
 
-  /// Normalizes parser output to the mapper payload.
-  /// Accepts:
-  ///  - List -> wraps as {"items":[...]}
-  ///  - Map with key "items" -> passes through (adds totals if provided)
-  ///  - Map with key "receipt_json" (List) -> wraps into {items:[...]}
   Map<String, dynamic> _normalizeReceiptPayload(
       dynamic parsed, {
         double? subtotal,
@@ -591,10 +654,10 @@ class PawprintApi {
     } else if (parsed is Map<String, dynamic>) {
       if (parsed.containsKey('items') && parsed['items'] is List) {
         payload = Map<String, dynamic>.from(parsed);
-      } else if (parsed.containsKey('receipt_json') && parsed['receipt_json'] is List) {
+      } else if (parsed.containsKey('receipt_json') &&
+          parsed['receipt_json'] is List) {
         payload = {'items': parsed['receipt_json'] as List};
       } else {
-        // Fallback: treat as single item row
         payload = {'items': [parsed]};
       }
     } else {
@@ -607,6 +670,194 @@ class PawprintApi {
 
     return payload;
   }
+
+  /* =============== Client-side Monthly Leaderboard (all users) =============== */
+
+  Future<List<LeaderboardRowDto>> getMonthlyLeaderboard({int? year, int? month}) async {
+    final users = await listUsers();
+    final results = await Future.wait(users.map((u) async {
+      try {
+        final m =
+        await getMonthlyEmissions(userid: u.userid, year: year, month: month);
+        return LeaderboardRowDto(
+          userid: u.userid,
+          name: u.name,
+          savedKg: m.savedKg,
+          emittedKg: m.emittedKg,
+        );
+      } catch (_) {
+        return LeaderboardRowDto(
+          userid: u.userid,
+          name: u.name,
+          savedKg: 0.0,
+          emittedKg: 0.0,
+        );
+      }
+    }).toList());
+
+    results.sort((a, b) {
+      final s = b.savedKg.compareTo(a.savedKg);
+      if (s != 0) return s;
+      final e = a.emittedKg.compareTo(b.emittedKg);
+      if (e != 0) return e;
+      return a.name.toLowerCase().compareTo(b.name.toLowerCase());
+    });
+
+    return results;
+  }
+
+  /* ===================== FRIENDS API — with emissions for leaderboard ===================== */
+
+  /// GET /api/users/<userid>/search_friend
+  Future<FriendDto?> searchFriend(int userid) async {
+    final uri = Uri.parse('$baseUrl/api/users/$userid/search_friend');
+    final resp = await http.get(uri, headers: _headers).timeout(_timeout);
+
+    if (resp.statusCode == 404) return null;
+    if (resp.statusCode != 200) {
+      throw HttpException('search_friend error: ${resp.statusCode} ${resp.body}');
+    }
+    final j = jsonDecode(resp.body) as Map<String, dynamic>;
+    return FriendDto(
+      userid: (j['userid'] as num).toInt(),
+      name: (j['name'] ?? '').toString(),
+    );
+  }
+
+  /// POST /api/users/<fromUserId>/add_friend  { "friend_userid": <toUserId> }
+  Future<void> sendFriendRequest({
+    required int fromUserId,
+    required int toUserId,
+  }) async {
+    final uri = Uri.parse('$baseUrl/api/users/$fromUserId/add_friend');
+    final resp = await http
+        .post(uri, headers: _headers, body: jsonEncode({'friend_userid': toUserId}))
+        .timeout(_timeout);
+
+    if (resp.statusCode == 200 || resp.statusCode == 201) return;
+
+    // Backend returns 400 if duplicate, 404 if user missing.
+    throw HttpException('add_friend failed: ${resp.statusCode} ${resp.body}');
+  }
+
+  /// GET /api/users/<userid>/process_request
+  /// Returns: { "pending_requests": [ {request_id, from_user_id, from_user_name}, ... ] }
+  Future<List<FriendRequestDto>> listFriendRequests(int userid) async {
+    final uri = Uri.parse('$baseUrl/api/users/$userid/process_request');
+    final resp = await http.get(uri, headers: _headers).timeout(_timeout);
+
+    if (resp.statusCode != 200) {
+      throw HttpException('process_request (GET) failed: ${resp.statusCode} ${resp.body}');
+    }
+    final j = jsonDecode(resp.body) as Map<String, dynamic>;
+    final List list = (j['pending_requests'] as List? ?? const []);
+    return list.map((e) {
+      final m = e as Map<String, dynamic>;
+      return FriendRequestDto(
+        requestId: (m['request_id'] as num).toInt(),
+        fromUserId: (m['from_user_id'] as num).toInt(),
+        fromName: (m['from_user_name'] ?? '').toString(),
+      );
+    }).toList();
+  }
+
+  /// POST /api/users/<userid>/process_request  { "request_id": ..., "action": "accept"|"reject" }
+  Future<void> respondFriendRequest({
+    required int userid,
+    required int requestId,
+    required bool accept,
+  }) async {
+    final uri = Uri.parse('$baseUrl/api/users/$userid/process_request');
+    final body = {'request_id': requestId, 'action': accept ? 'accept' : 'reject'};
+    final resp = await http
+        .post(uri, headers: _headers, body: jsonEncode(body))
+        .timeout(_timeout);
+
+    if (resp.statusCode == 200) return;
+
+    throw HttpException('process_request (POST) failed: ${resp.statusCode} ${resp.body}');
+  }
+
+  /// GET /api/users/<userid>/leaderboard
+  ///
+  /// Accepts either:
+  ///   { "leaderboard": [...] }  or  [ ... ]
+  Future<List<FriendsLeaderboardRowDto>> getFriendsLeaderboard(int userid) async {
+    final uri = Uri.parse('$baseUrl/api/users/$userid/leaderboard');
+    final resp = await http.get(uri, headers: _headers).timeout(_timeout);
+
+    if (resp.statusCode != 200) {
+      throw HttpException('leaderboard error: ${resp.statusCode} ${resp.body}');
+    }
+
+    final decoded = jsonDecode(resp.body);
+
+    // Flexible payload handling
+    List raw;
+    if (decoded is List) {
+      raw = decoded;
+    } else if (decoded is Map<String, dynamic>) {
+      final lb = decoded['leaderboard'];
+      if (lb is List) {
+        raw = lb;
+      } else if (decoded['results'] is List) {
+        raw = decoded['results'] as List;
+      } else {
+        throw const FormatException('Unexpected leaderboard payload shape');
+      }
+    } else {
+      throw const FormatException('Unexpected leaderboard payload type');
+    }
+
+    double _toDouble(dynamic v) =>
+        (v is num) ? v.toDouble() : double.tryParse('$v') ?? 0.0;
+    int _toInt(dynamic v) =>
+        (v is num) ? v.toInt() : int.tryParse('$v') ?? 0;
+
+    var rows = raw.whereType<Map>().map((e) {
+      final m = e.cast<String, dynamic>();
+      return FriendsLeaderboardRowDto(
+        userid: _toInt(m['userid']),
+        name: (m['name'] ?? '').toString(),
+        carbonpoints: _toInt(m['carbonpoints']),
+        ecopetmood: _toInt(m['ecopetmood']),
+        weeklyEmissionsProduced: _toDouble(m['weekly_emissions_produced']),
+        weeklyEmissionsSaved: _toDouble(m['weekly_emissions_saved']),
+      );
+    }).toList();
+
+    // Fill weekly numbers from dashboard if both are zero
+    final needsFill = rows.any((r) =>
+    r.weeklyEmissionsProduced == 0.0 && r.weeklyEmissionsSaved == 0.0);
+
+    if (needsFill) {
+      rows = await Future.wait(rows.map((r) async {
+        if (r.weeklyEmissionsProduced != 0.0 || r.weeklyEmissionsSaved != 0.0) {
+          return r;
+        }
+        try {
+          final dash = await getDashboard(r.userid);
+          return r.copyWith(
+            weeklyEmissionsProduced: dash.user.weeklyEmissionsProduced,
+            weeklyEmissionsSaved: dash.user.weeklyEmissionsSaved,
+          );
+        } catch (_) {
+          return r;
+        }
+      }));
+    }
+
+    return rows;
+  }
+
+  /// "Friends list" derived from leaderboard (excluding current user).
+  Future<List<FriendDto>> listFriends(int userid) async {
+    final board = await getFriendsLeaderboard(userid);
+    return board
+        .where((e) => e.userid != userid)
+        .map((e) => FriendDto(userid: e.userid, name: e.name))
+        .toList();
+  }
 }
 
 /* ---- Mood enum + mapper ---- */
@@ -616,4 +867,19 @@ PetMood petMoodFromScore(int score) {
   if (score > 60) return PetMood.happy;
   if (score <= 30) return PetMood.sad;
   return PetMood.neutral;
+}
+
+/* ---- Legacy monthly leaderboard DTO (kept) ---- */
+class LeaderboardRowDto {
+  final int userid;
+  final String name;
+  final double savedKg; // positive magnitude
+  final double emittedKg; // positive magnitude
+
+  LeaderboardRowDto({
+    required this.userid,
+    required this.name,
+    required this.savedKg,
+    required this.emittedKg,
+  });
 }

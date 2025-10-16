@@ -374,6 +374,121 @@ def assign_random_quests(userid):
     finally:
         session.close()
 
+# ---------- Single UserQuest + Replace Random ----------
+
+@api.get("/userquests/<int:userquestid>")
+def get_userquest(userquestid: int):
+    """
+    Return one userquest joined with quest details.
+    Shape matches list_userquests rows (includes nested 'quest').
+    """
+    session = SessionLocal()
+    try:
+        row = session.execute(
+            select(UserQuest, Quest)
+            .join(Quest, Quest.questid == UserQuest.questid)
+            .where(UserQuest.userquestid == userquestid)
+        ).first()
+
+        if not row:
+            abort(404, description="UserQuest not found")
+
+        uq, q = row
+        return jsonify({
+            "userquestid": uq.userquestid,
+            "userid": uq.userid,
+            "questid": uq.questid,
+            "isactive": bool(uq.isactive),
+            "iscompleted": bool(uq.iscompleted),
+            "completeddate": uq.completeddate.isoformat() if uq.completeddate else None,
+            "quest": as_quest_dict(q),
+        })
+    finally:
+        session.close()
+
+
+@api.post("/userquests/<int:userquestid>/replace_random")
+def replace_userquest_random(userquestid: int):
+    """
+    Body (optional):
+      {
+        "difficulty": ["Easy"]   # or ["Easy","Medium"]; defaults to SAME difficulty as current quest
+      }
+
+    Replaces the quest *in-place* on the SAME UserQuest row by switching questid
+    to a random quest the user doesn't already have (any status) and that differs
+    from the current questid. Returns the updated userquest + nested quest.
+    """
+    data = request.get_json(silent=True) or {}
+
+    session = SessionLocal()
+    try:
+        # Load current
+        uq = session.get(UserQuest, userquestid)
+        if not uq:
+            abort(404, description="UserQuest not found")
+
+        cur_q = session.get(Quest, uq.questid)
+        if not cur_q:
+            abort(400, description="Quest missing for this UserQuest")
+
+        # Determine difficulty filter
+        diffs = data.get("difficulty")
+        if not diffs:
+            # default to current quest difficulty
+            diffs = [cur_q.difficulty] if cur_q.difficulty else []
+
+        # Quests already assigned to this user (any status) — avoid duplicates
+        existing_qids = set(
+            qid for (qid,) in session.execute(
+                select(UserQuest.questid).where(UserQuest.userid == uq.userid)
+            ).all()
+        )
+
+        # Candidate pool: not already owned; not the current quest; honor difficulty if provided
+        q = select(Quest).where(~Quest.questid.in_(existing_qids))
+        if diffs:
+            q = q.where(Quest.difficulty.in_(diffs))
+        q = q.order_by(func.random()).limit(1)
+
+        pick = session.execute(q).scalars().first()
+        if not pick:
+            # If we can't find a totally new quest, relax the "not already owned" constraint
+            # but still avoid replacing with the same questid.
+            q2 = select(Quest).where(Quest.questid != uq.questid)
+            if diffs:
+                q2 = q2.where(Quest.difficulty.in_(diffs))
+            q2 = q2.order_by(func.random()).limit(1)
+            pick = session.execute(q2).scalars().first()
+
+        if not pick:
+            abort(409, description="No alternative quest available for replacement")
+
+        # Replace IN-PLACE: keep same userquestid, swap questid, keep active & not completed
+        uq.questid = pick.questid
+        uq.isactive = True
+        uq.iscompleted = False
+        uq.completeddate = None
+
+        session.commit()
+        session.refresh(uq)
+
+        # Join to return nested quest details
+        q_pick = session.get(Quest, uq.questid)
+        return jsonify({
+            "userquestid": uq.userquestid,
+            "userid": uq.userid,
+            "questid": uq.questid,
+            "isactive": bool(uq.isactive),
+            "iscompleted": bool(uq.iscompleted),
+            "completeddate": uq.completeddate.isoformat() if uq.completeddate else None,
+            "quest": as_quest_dict(q_pick),
+        })
+
+    finally:
+        session.close()
+
+
 
 # ---------- Complete a userquest (creates event, updates points/mood) ----------
 @api.post("/userquests/<int:userquestid>/complete")

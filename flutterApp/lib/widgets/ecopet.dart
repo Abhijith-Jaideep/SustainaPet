@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
-import '../api/pawprint_api.dart' show PetMood;
+import '../api/sustainapet_api.dart' show PetMood;
 
 class EcoPet extends StatefulWidget {
   final PetMood mood;

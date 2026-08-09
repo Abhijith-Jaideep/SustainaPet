@@ -1,5 +1,5 @@
 // lib/main.dart
-import 'package:carbon_pawprint/screens/socials_screen.dart';
+import 'package:sustainapet/screens/socials_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 

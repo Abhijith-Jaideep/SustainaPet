@@ -4,7 +4,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:math' as math;
 
 import '../api/base_url.dart';
-import '../api/pawprint_api.dart';
+import '../api/sustainapet_api.dart';
 
 enum Timeframe { day, week, month }
 
@@ -16,7 +16,7 @@ class DashboardScreen extends StatefulWidget {
 }
 
 class _DashboardScreenState extends State<DashboardScreen> {
-  late final PawprintApi api;
+  late final SustainaPetApi api;
 
   Future<_DashData>? _future;
   int? _userId;
@@ -44,7 +44,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   @override
   void initState() {
     super.initState();
-    api = PawprintApi(pickBaseUrl());
+    api = SustainaPetApi(pickBaseUrl());
     _initializeDashboard();
   }
 

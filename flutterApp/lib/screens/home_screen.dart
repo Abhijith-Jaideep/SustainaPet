@@ -4,7 +4,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../widgets/ecopet.dart';
 import '../api/base_url.dart';
-import '../api/pawprint_api.dart';
+import '../api/sustainapet_api.dart';
 import 'package:flutter/services.dart';
 import '../widgets/helper_icon.dart';
 
@@ -17,7 +17,7 @@ class HomeScreen extends StatefulWidget {
 enum _MoodBand { sad, neutral, happy }
 
 class _HomeScreenState extends State<HomeScreen> {
-  late final PawprintApi api;
+  late final SustainaPetApi api;
   int? _userId;
   String? _userName;
   Future<PetMood>? _futureMood = Future.value(PetMood.neutral);
@@ -56,7 +56,7 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
-    api = PawprintApi(pickBaseUrl());
+    api = SustainaPetApi(pickBaseUrl());
     _loadUserIdAndMood();
   }
 

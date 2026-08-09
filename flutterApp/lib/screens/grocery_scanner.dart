@@ -12,7 +12,7 @@ import '../widgets/helper_icon.dart';
 // Image normalization
 import 'package:image/image.dart' as img;
 
-import 'package:carbon_pawprint/api/pawprint_api.dart'; // includes ReceiptMapRow
+import 'package:sustainapet/api/sustainapet_api.dart'; // includes ReceiptMapRow
 import '../api/base_url.dart';
 
 /// ===== TOP-LEVEL: Editable items model =====
@@ -48,13 +48,13 @@ class _GroceryScannerScreenState extends State<GroceryScannerScreen> {
   String? _moodEffectLabel;
   Color? _moodEffectColor;
 
-  late final PawprintApi api;
+  late final SustainaPetApi api;
   final ImagePicker _imagePicker = ImagePicker();
 
   @override
   void initState() {
     super.initState();
-    api = PawprintApi(pickBaseUrl());
+    api = SustainaPetApi(pickBaseUrl());
   }
 
   // ================= Image Normalization =================

@@ -4,7 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../api/base_url.dart';
-import '../api/pawprint_api.dart';
+import '../api/sustainapet_api.dart';
 import '../widgets/ecopet.dart';
 
 // NOTE: This file expects you have `HelpIconTabAware` in widgets/helper_icon.dart
@@ -21,7 +21,7 @@ class SocialsScreen extends StatefulWidget {
 class _SocialsScreenState extends State<SocialsScreen>
     with SingleTickerProviderStateMixin {
   late final TabController _tab;
-  late final PawprintApi api;
+  late final SustainaPetApi api;
 
   final TextEditingController _idCtrl = TextEditingController();
 
@@ -44,7 +44,7 @@ class _SocialsScreenState extends State<SocialsScreen>
   void initState() {
     super.initState();
     _tab = TabController(length: 2, vsync: this);
-    api = PawprintApi(pickBaseUrl());
+    api = SustainaPetApi(pickBaseUrl());
     _bootstrap();
   }
 

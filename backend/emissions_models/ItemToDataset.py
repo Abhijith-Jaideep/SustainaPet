@@ -8,7 +8,10 @@ import re, numpy as np, pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from nltk.stem import WordNetLemmatizer
-from sentence_transformers import SentenceTransformer, util
+# sentence_transformers pulls in torch, which costs a few hundred MB of RSS
+# just to import. On a 512MB host that is most of the budget spent before the
+# app serves anything, and it is only needed for the category fallback when an
+# item does not match a food directly. Imported on first use instead.
 
 import nltk
 import os 
@@ -126,6 +129,8 @@ def build_index_from_emissions(df_emissions: pd.DataFrame, name_col="Name"):
 # Build semantic category index
 # -----------------------------------
 def build_category_index(categories, model_name="all-MiniLM-L6-v2", device=None):
+    from sentence_transformers import SentenceTransformer
+
     model = SentenceTransformer(model_name, device=device)
     labels = [normalize_name(c) for c in categories]
     emb = model.encode(labels, normalize_embeddings=True)
@@ -156,6 +161,8 @@ def map_item(item: str, items_index, cat_index, df_emissions, df_category_emissi
     # --- Semantic fallback ---
     Category, cat_conf = None, 0.0
     if confidence < threshold:
+        from sentence_transformers import util
+
         q = cat_index["model"].encode([norm_item], normalize_embeddings=True)
         sims = util.cos_sim(q, cat_index["emb"])[0].cpu().numpy()
         j = int(np.argmax(sims))

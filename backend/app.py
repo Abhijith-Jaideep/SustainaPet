@@ -10,6 +10,7 @@ import re
 import base64 as _b64
 from io import BytesIO
 from PIL import Image, UnidentifiedImageError
+from google.auth.exceptions import DefaultCredentialsError
 
 import pandas as pd
 from emissions_models.ItemToDataset import (
@@ -726,6 +727,16 @@ def update_receipt():
 
     except UnidentifiedImageError:
         return jsonify({"error": "invalid_image"}), 400
+    except DefaultCredentialsError:
+        # Deliberate: this deployment runs without Vision credentials, because
+        # the API refuses service unless a billing account is attached. Every
+        # other endpoint works. Setting GOOGLE_APPLICATION_CREDENTIALS_JSON
+        # enables this one with no code change.
+        return jsonify({
+            "error": "ocr_unavailable",
+            "detail": "Receipt OCR is not configured on this deployment. "
+                      "Send already parsed items to /map-receipt instead.",
+        }), 503
     except Exception as e:
         return jsonify({"error": "Parsing failed", "detail": str(e)}), 500
 

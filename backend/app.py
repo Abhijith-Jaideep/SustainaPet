@@ -111,8 +111,8 @@ def _ensure_emission_refs_loaded():
         engine = s.get_bind()
 
         # Pull only the columns we use
-        df_em = pd.read_sql('SELECT "Name","Emissions","Impact" FROM pawprint."FoodEmissions";', engine)
-        df_cat = pd.read_sql('SELECT "Category","Emissions","Impact" FROM pawprint."CategoryEmissions";', engine)
+        df_em = pd.read_sql('SELECT "Name","Emissions","Impact" FROM sustainapet."FoodEmissions";', engine)
+        df_cat = pd.read_sql('SELECT "Category","Emissions","Impact" FROM sustainapet."CategoryEmissions";', engine)
 
         # Clean + numeric
         df_em = df_em[df_em["Name"].notna()].copy()

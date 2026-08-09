@@ -1,9 +1,9 @@
 # from sqlalchemy import create_engine, text, inspect, MetaData, Table, select, func
 # from sqlalchemy.schema import CreateTable
 
-# DB_USER = "pawprint_admin"
+# DB_USER = "<user>"
 # DB_PASS = "ecopet5!"
-# DB_HOST = "ecopawprint.postgres.database.azure.com"
+# DB_HOST = "<host>"
 # DB_PORT = 5432
 # DB_NAME = "postgres"
 
@@ -14,7 +14,7 @@
 
 # engine = create_engine(DATABASE_URL, future=True)
 
-# SCHEMA = "pawprint"   # your schema name
+# SCHEMA = "sustainapet"   # your schema name
 # MAX_ROWS = 10         # how many data rows to preview per table
 
 # def print_hr():

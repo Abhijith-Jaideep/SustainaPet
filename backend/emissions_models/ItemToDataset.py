@@ -217,23 +217,48 @@ def map_receipt_with_emissions(receipt_json, items_index, cat_index, df_emission
 # In[3]:
 
 
+import os
 import pandas as pd
 from sqlalchemy import create_engine
 
-# Connect to Azure PostgreSQL
-engine = create_engine(
-    "postgresql+psycopg2://pawprint_admin:ecopet5!@ecopawprint.postgres.database.azure.com:5432/postgres"
-)
 
-# Retrieve the two tables
-df_emissions = pd.read_sql('SELECT * FROM pawprint."FoodEmissions";', engine)
-df_category_emissions = pd.read_sql('SELECT * FROM pawprint."CategoryEmissions";',engine)
+# This block used to run at import time against a connection string with the
+# database password written into it. Two problems: the credential was in the
+# source of a public repository, and merely importing this module opened a
+# database connection and ran two queries, so anything that touched it needed
+# a live database.
+#
+# The URL now comes from the environment, and the indices are built on first
+# use rather than on import.
+def _engine():
+    url = os.environ.get("DATABASE_URL")
+    if not url:
+        raise RuntimeError(
+            "DATABASE_URL is not set. Expected a SQLAlchemy Postgres URL, for "
+            "example postgresql+psycopg2://user:pass@host:5432/dbname"
+        )
+    return create_engine(url)
 
 
+_indices = None
 
-# Build indices
-items_index = build_index_from_emissions(df_emissions, name_col="Name")
-cat_index = build_category_index(list(df_category_emissions["Category"]))
+
+def get_indices():
+    """Load the emissions reference tables and build the lookup indices once."""
+    global _indices
+    if _indices is None:
+        engine = _engine()
+        df_emissions = pd.read_sql('SELECT * FROM sustainapet."FoodEmissions";', engine)
+        df_category_emissions = pd.read_sql(
+            'SELECT * FROM sustainapet."CategoryEmissions";', engine
+        )
+        _indices = {
+            "df_emissions": df_emissions,
+            "df_category_emissions": df_category_emissions,
+            "items_index": build_index_from_emissions(df_emissions, name_col="Name"),
+            "cat_index": build_category_index(list(df_category_emissions["Category"])),
+        }
+    return _indices
 
 
 # In[7]:

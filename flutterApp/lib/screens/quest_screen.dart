@@ -5,7 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:async';
 
 import '../api/base_url.dart';
-import '../api/pawprint_api.dart';
+import '../api/sustainapet_api.dart';
 import '../widgets/helper_icon.dart';
 
 class QuestScreen extends StatefulWidget {
@@ -16,7 +16,7 @@ class QuestScreen extends StatefulWidget {
 }
 
 class _QuestScreenState extends State<QuestScreen> {
-  late final PawprintApi api;
+  late final SustainaPetApi api;
   int? _userId;
 
   List<UserQuestDto> _active = [];
@@ -33,7 +33,7 @@ class _QuestScreenState extends State<QuestScreen> {
   @override
   void initState() {
     super.initState();
-    api = PawprintApi(pickBaseUrl());
+    api = SustainaPetApi(pickBaseUrl());
     _bootstrap();
     _scheduleDailyDecayAtMidnight();
   }

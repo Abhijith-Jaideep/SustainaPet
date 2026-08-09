@@ -7,8 +7,6 @@ from .ItemToDataset import (
     map_receipt_with_emissions,
     build_index_from_emissions,
     build_category_index,
-    df_emissions,
-    df_category_emissions
 )
 
 # def map_receipt():

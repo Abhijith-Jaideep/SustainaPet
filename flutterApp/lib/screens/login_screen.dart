@@ -3,7 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../api/base_url.dart';
-import '../api/pawprint_api.dart';
+import '../api/sustainapet_api.dart';
 
 class LoginScreen extends StatefulWidget {
   final VoidCallback onLoginSuccess;
@@ -21,7 +21,7 @@ class _LoginScreenState extends State<LoginScreen> {
   final _devFormKey = GlobalKey<FormState>();
   final _devIdCtrl = TextEditingController();
 
-  late final PawprintApi api;
+  late final SustainaPetApi api;
 
   bool _loading = false;
   bool _showDev = false;
@@ -29,7 +29,7 @@ class _LoginScreenState extends State<LoginScreen> {
   @override
   void initState() {
     super.initState();
-    api = PawprintApi(pickBaseUrl());
+    api = SustainaPetApi(pickBaseUrl());
   }
 
   @override

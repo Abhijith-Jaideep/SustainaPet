@@ -10,6 +10,7 @@ import re
 import base64 as _b64
 from io import BytesIO
 from PIL import Image, UnidentifiedImageError
+from google.auth.exceptions import DefaultCredentialsError
 
 import pandas as pd
 from emissions_models.ItemToDataset import (
@@ -111,8 +112,8 @@ def _ensure_emission_refs_loaded():
         engine = s.get_bind()
 
         # Pull only the columns we use
-        df_em = pd.read_sql('SELECT "Name","Emissions","Impact" FROM pawprint."FoodEmissions";', engine)
-        df_cat = pd.read_sql('SELECT "Category","Emissions","Impact" FROM pawprint."CategoryEmissions";', engine)
+        df_em = pd.read_sql('SELECT "Name","Emissions","Impact" FROM sustainapet."FoodEmissions";', engine)
+        df_cat = pd.read_sql('SELECT "Category","Emissions","Impact" FROM sustainapet."CategoryEmissions";', engine)
 
         # Clean + numeric
         df_em = df_em[df_em["Name"].notna()].copy()
@@ -726,6 +727,16 @@ def update_receipt():
 
     except UnidentifiedImageError:
         return jsonify({"error": "invalid_image"}), 400
+    except DefaultCredentialsError:
+        # Deliberate: this deployment runs without Vision credentials, because
+        # the API refuses service unless a billing account is attached. Every
+        # other endpoint works. Setting GOOGLE_APPLICATION_CREDENTIALS_JSON
+        # enables this one with no code change.
+        return jsonify({
+            "error": "ocr_unavailable",
+            "detail": "Receipt OCR is not configured on this deployment. "
+                      "Send already parsed items to /map-receipt instead.",
+        }), 503
     except Exception as e:
         return jsonify({"error": "Parsing failed", "detail": str(e)}), 500
 

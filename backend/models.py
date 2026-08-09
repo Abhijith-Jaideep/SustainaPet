@@ -8,7 +8,7 @@ from sqlalchemy import (
 )
 
 
-metadata = MetaData(schema="pawprint")
+metadata = MetaData(schema="sustainapet")
 Base = declarative_base(metadata=metadata)
 
 class User(Base):
@@ -30,8 +30,8 @@ class UserQuest(Base):
     __tablename__ = "userquests"
     userquestid = Column(Integer, primary_key=True)
 
-    # IMPORTANT: because Base.metadata already has schema="pawprint",
-    # using just 'User.userid' is enough and resolves to pawprint."User"
+    # IMPORTANT: because Base.metadata already has schema="sustainapet",
+    # using just 'User.userid' is enough and resolves to sustainapet."User"
     userid = Column(Integer, ForeignKey('User.userid', ondelete="CASCADE"), nullable=False)
 
     # your DB has no FK to quest in the DDL; leave as plain int

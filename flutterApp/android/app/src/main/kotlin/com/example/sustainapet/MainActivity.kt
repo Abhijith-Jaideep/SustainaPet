@@ -1,4 +1,4 @@
-package com.example.carbon_pawprint
+package com.example.sustainapet
 
 import io.flutter.embedding.android.FlutterActivity
 

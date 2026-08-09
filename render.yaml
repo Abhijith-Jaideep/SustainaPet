@@ -1,0 +1,35 @@
+# Render blueprint for the SustainaPet backend.
+# From the dashboard: New > Blueprint, point it at this repo.
+#
+# The Flutter app is not here. It is a mobile client and is distributed as an
+# APK rather than hosted.
+
+services:
+  - type: web
+    name: sustainapet-api
+    runtime: python
+    rootDir: backend
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    # The Procfile already declares this, but Render's blueprint wants it
+    # explicit. Single worker: sentence-transformers loads a model into memory
+    # and each worker would hold its own copy.
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --timeout 120
+    healthCheckPath: /api/ping
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.10"
+
+      # Neon connection string. db.py rewrites the scheme to psycopg2 itself,
+      # so paste it exactly as Neon gives it.
+      - key: DATABASE_URL
+        sync: false
+
+      # The Vision service account, as a single line of JSON rather than a
+      # file, because there is nowhere to put a file on a managed host.
+      # receipt_parser prefers this over the file path.
+      - key: GOOGLE_APPLICATION_CREDENTIALS_JSON
+        sync: false
+
+# NLTK needs no configuration: backend/nltk_data is committed and
+# ItemToDataset adds it to nltk.data.path at import.

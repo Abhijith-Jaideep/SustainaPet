@@ -329,9 +329,9 @@ class FriendsLeaderboardRowDto {
 
 /* ===================== API ===================== */
 
-class PawprintApi {
+class SustainaPetApi {
   final String baseUrl;
-  PawprintApi(this.baseUrl);
+  SustainaPetApi(this.baseUrl);
 
   static const _headers = {'Content-Type': 'application/json'};
   static const _timeout = Duration(seconds: 10);

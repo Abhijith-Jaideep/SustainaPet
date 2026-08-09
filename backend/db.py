@@ -62,23 +62,36 @@ def _load_env():
 _load_env()
 # ----------------------------------------------------------------
 
-# Read individual values
-DB_USER = os.getenv("DB_USER")
-DB_PASS = os.getenv("DB_PASS")
-DB_HOST = os.getenv("DB_HOST")
-DB_PORT = os.getenv("DB_PORT", "5432")
-DB_NAME = os.getenv("DB_NAME")
+# A single DATABASE_URL wins if it is set. Most hosts hand out one connection
+# string rather than five separate values, and the emissions engine reads the
+# same variable, so one setting configures the whole backend.
+DATABASE_URL = os.getenv("DATABASE_URL")
 
-if not all([DB_USER, DB_PASS, DB_HOST, DB_PORT, DB_NAME]):
-    raise RuntimeError(
-        "Missing one or more required DB_* env vars in .env "
-        "(expected DB_USER, DB_PASS, DB_HOST, DB_PORT, DB_NAME)."
+if DATABASE_URL:
+    # Providers usually publish postgres:// or postgresql://, but SQLAlchemy
+    # needs an explicit driver to pick psycopg2.
+    if DATABASE_URL.startswith("postgres://"):
+        DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+psycopg2://", 1)
+    elif DATABASE_URL.startswith("postgresql://"):
+        DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+psycopg2://", 1)
+else:
+    # Fall back to the five separate values, which is how local .env files
+    # were set up before.
+    DB_USER = os.getenv("DB_USER")
+    DB_PASS = os.getenv("DB_PASS")
+    DB_HOST = os.getenv("DB_HOST")
+    DB_PORT = os.getenv("DB_PORT", "5432")
+    DB_NAME = os.getenv("DB_NAME")
+
+    if not all([DB_USER, DB_PASS, DB_HOST, DB_PORT, DB_NAME]):
+        raise RuntimeError(
+            "No database configuration found. Set DATABASE_URL, or all of "
+            "DB_USER, DB_PASS, DB_HOST, DB_PORT and DB_NAME."
+        )
+
+    DATABASE_URL = (
+        f"postgresql+psycopg2://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}?sslmode=require"
     )
-
-# Build DATABASE_URL for SQLAlchemy
-DATABASE_URL = (
-    f"postgresql+psycopg2://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}?sslmode=require"
-)
 
 # Engine with health-checks so stale connections are refreshed automatically
 engine = create_engine(
